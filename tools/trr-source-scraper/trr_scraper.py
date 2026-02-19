@@ -9,9 +9,15 @@ Usage:
     python trr_scraper.py T1003.006
     python trr_scraper.py T1003.006 --name "DCSync"
     python trr_scraper.py T1003.006 --output ./research/
+    python trr_scraper.py T1003.006 --no-enrich           # fast scan
+    python trr_scraper.py T1003.006 --no-ddg              # MITRE + ART only
+    python trr_scraper.py T1003.006 --extra-terms mimikatz
+    python trr_scraper.py T1003.006 --json                # also write JSON
+    python trr_scraper.py T1003.006 --quiet               # minimal output
 """
 
 import argparse
+import json
 import sys
 from pathlib import Path
 from datetime import datetime
@@ -42,6 +48,8 @@ from utils import (
     get_category_for_domain,
 )
 
+REPORT_VERSION = "1.1"
+
 
 def parse_args():
     """Parse command-line arguments."""
@@ -53,6 +61,11 @@ Examples:
     python trr_scraper.py T1003.006
     python trr_scraper.py T1003.006 --name "DCSync"
     python trr_scraper.py T1003.006 --output ./research/ --max-per-category 5
+    python trr_scraper.py T1003.006 --no-enrich           # fast, no metadata fetch
+    python trr_scraper.py T1003.006 --no-ddg              # skip web search entirely
+    python trr_scraper.py T1003.006 --extra-terms mimikatz # add terms to every query
+    python trr_scraper.py T1003.006 --json                # also write JSON output
+    python trr_scraper.py T1003.006 --quiet               # suppress progress output
         """
     )
 
@@ -81,22 +94,57 @@ Examples:
     parser.add_argument(
         "--no-enrich",
         action="store_true",
-        help="Skip fetching page metadata (faster but less detail)"
+        help="Skip fetching page metadata (faster but less detail). Saves as _quick_scan.md"
+    )
+
+    parser.add_argument(
+        "--no-ddg",
+        action="store_true",
+        help="Skip DuckDuckGo search entirely (MITRE + Atomic Red Team data only)"
+    )
+
+    parser.add_argument(
+        "--extra-terms", "-e",
+        dest="extra_terms",
+        default="",
+        help="Additional search terms appended to every query (e.g., 'mimikatz lsass')"
+    )
+
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Also write a JSON file with all raw collected data alongside the markdown"
     )
 
     parser.add_argument(
         "--verbose", "-v",
         action="store_true",
-        help="Print detailed progress information"
+        help="Print detailed progress and diagnostic information"
+    )
+
+    parser.add_argument(
+        "--quiet", "-q",
+        action="store_true",
+        help="Suppress all output except the final 'Saved to:' line"
     )
 
     return parser.parse_args()
 
 
-def print_progress(message: str, verbose: bool = False):
-    """Print progress message (always prints step headers; verbose adds detail)."""
+def print_progress(message: str, verbose: bool = False, quiet: bool = False, always: bool = False):
+    """
+    Print a progress message.
+
+    Step headers (always=True) always print unless quiet mode is set.
+    Detail messages (verbose=True) only print when --verbose is active.
+    quiet=True suppresses everything except lines explicitly forced with always=True
+    and the final save confirmation.
+    """
+    if quiet:
+        return
     timestamp = datetime.now().strftime("%H:%M:%S")
-    print(f"[{timestamp}] {message}")
+    if always or verbose:
+        print(f"[{timestamp}] {message}")
 
 
 def _build_ddm_hints(data_sources: List[str]) -> List[str]:
@@ -282,7 +330,9 @@ def generate_markdown_report(
     existing_ddms: List[Dict],
     atomic_tests: List[Dict],
     search_results: Dict[str, List[Dict]],
-    config: ConfigManager
+    config: ConfigManager,
+    no_enrich: bool = False,
+    no_ddg: bool = False,
 ) -> str:
     """
     Generate a markdown report with all gathered information.
@@ -295,6 +345,8 @@ def generate_markdown_report(
         atomic_tests: Emulation tests from Atomic Red Team
         search_results: Search results organized by category
         config: Configuration manager
+        no_enrich: Whether metadata enrichment was skipped
+        no_ddg: Whether DuckDuckGo search was skipped
 
     Returns:
         Markdown formatted string
@@ -307,7 +359,17 @@ def generate_markdown_report(
     lines.append(f"# TRR Research Brief: {technique_id} — {technique_name}")
     lines.append("")
     lines.append(f"**Generated:** {timestamp}")
+    lines.append(f"**Report Version:** {REPORT_VERSION}")
     lines.append(f"**Technique:** [{technique_id}](https://attack.mitre.org/techniques/{technique_id.replace('.', '/')})")
+
+    if no_ddg:
+        scan_mode = "Offline (--no-ddg: MITRE + Atomic Red Team only)"
+    elif no_enrich:
+        scan_mode = "Quick Scan (--no-enrich: metadata enrichment skipped)"
+    else:
+        scan_mode = "Full Enriched Run"
+    lines.append(f"**Scan Mode:** {scan_mode}")
+
     if technique_info:
         if technique_info.get('tactics'):
             lines.append(f"**Tactics:** {', '.join(technique_info.get('tactics', []))}")
@@ -429,59 +491,87 @@ def generate_markdown_report(
     total_sources = 0
     high_priority_count = 0
 
-    for category in priority_order:
-        results = search_results.get(category, [])
-        if not results:
-            continue
-
-        total_sources += len(results)
-        priority = config.trusted_sources.get(category, {}).get('priority', 'medium')
-        if priority == 'high':
-            high_priority_count += len(results)
-
-        label = category_labels.get(category, category.replace('_', ' ').title())
-        lines.append(f"## {label}")
+    if no_ddg:
+        lines.append("## Search Results")
         lines.append("")
-
-        for i, result in enumerate(results, 1):
-            title = result.get('title', 'Untitled')
-            url = result.get('url', '')
-            description = result.get('description', '')
-            date = result.get('date')
-            domain = result.get('domain', '')
-
-            lines.append(f"### {i}. [{title}]({url})")
-            lines.append("")
-
-            if domain:
-                lines.append(f"> **Source:** {domain}")
-            if date:
-                lines.append(f"> **Published:** {format_date(date)}")
-            lines.append("")
-
-            if description:
-                excerpt_len = config.output_settings.get('excerpt_length', 200)
-                lines.append(f"**Excerpt:** {clean_text(description, excerpt_len)}")
-                lines.append("")
-
-            lines.append(f"**Relevance:** {priority.title()}")
-            lines.append("")
-
+        lines.append("> **Note:** DuckDuckGo search was skipped (`--no-ddg`). No web sources were gathered.")
+        lines.append("> Run without `--no-ddg` to include search results.")
+        lines.append("")
         lines.append("---")
         lines.append("")
+    else:
+        quick_scan_note = (
+            no_enrich and
+            "> **Quick Scan Mode:** Page metadata (titles, publication dates) was not fetched.\n"
+            "> Descriptions shown are DuckDuckGo snippets only. Re-run without `--no-enrich` for full detail."
+        )
 
-    # Manual search queries
+        for category in priority_order:
+            results = search_results.get(category, [])
+            if not results:
+                continue
+
+            total_sources += len(results)
+            priority = config.trusted_sources.get(category, {}).get('priority', 'medium')
+            if priority == 'high':
+                high_priority_count += len(results)
+
+            label = category_labels.get(category, category.replace('_', ' ').title())
+            lines.append(f"## {label}")
+            lines.append("")
+
+            if no_enrich:
+                lines.append("> **Quick Scan Mode:** Page metadata (titles, publication dates) was not fetched.")
+                lines.append("> Descriptions shown are DuckDuckGo snippets only. Re-run without `--no-enrich` for full detail.")
+                lines.append("")
+
+            for i, result in enumerate(results, 1):
+                title = result.get('title', 'Untitled')
+                url = result.get('url', '')
+                description = result.get('description', '')
+                date = result.get('date')
+                domain = result.get('domain', '')
+
+                lines.append(f"### {i}. [{title}]({url})")
+                lines.append("")
+
+                if domain:
+                    lines.append(f"> **Source:** {domain}")
+                if date:
+                    lines.append(f"> **Published:** {format_date(date)}")
+                lines.append("")
+
+                if description:
+                    excerpt_len = config.output_settings.get('excerpt_length', 200)
+                    lines.append(f"**Excerpt:** {clean_text(description, excerpt_len)}")
+                    lines.append("")
+
+                lines.append(f"**Relevance:** {priority.title()}")
+                lines.append("")
+
+            lines.append("---")
+            lines.append("")
+
+    # Manual search queries — dynamically generated from HIGH priority domains
     lines.append("## Additional Search Queries")
     lines.append("")
     lines.append("Use these queries for deeper manual research:")
     lines.append("")
+
+    # Core queries
     lines.append(f'- `"{technique_name}" {technique_id} detection`')
-    lines.append(f'- `site:specterops.io "{technique_name}"`')
-    lines.append(f'- `site:thedfirreport.com "{technique_name}"`')
     lines.append(f'- `site:github.com/SigmaHQ/sigma {technique_id}`')
     lines.append(f'- `site:github.com/redcanaryco/atomic-red-team {technique_id}`')
-    lines.append(f'- `site:learn.microsoft.com "{technique_name}"`')
-    lines.append(f'- `{technique_id} {technique_name} site:github.com`')
+    lines.append("")
+
+    # Dynamically add site-specific queries for HIGH priority domains
+    lines.append("High-priority source queries (generated from config):")
+    lines.append("")
+    for category, cat_config in config.trusted_sources.items():
+        if cat_config.get('priority') == 'high':
+            for domain in cat_config.get('domains', [])[:6]:
+                lines.append(f'- `site:{domain} "{technique_name}"`')
+
     lines.append("")
     lines.append("---")
     lines.append("")
@@ -495,6 +585,8 @@ def generate_markdown_report(
 def main():
     """Main entry point for the TRR Source Scraper."""
     args = parse_args()
+    quiet = args.quiet
+    verbose = args.verbose
 
     # Validate technique ID
     technique_id = normalize_technique_id(args.technique_id)
@@ -503,8 +595,9 @@ def main():
         print("Expected format: T1003 or T1003.006")
         sys.exit(1)
 
-    print(f"TRR Source Scraper — Researching {technique_id}")
-    print("=" * 55)
+    if not quiet:
+        print(f"TRR Source Scraper — Researching {technique_id}")
+        print("=" * 55)
 
     # Load configuration
     config = ConfigManager()
@@ -512,17 +605,17 @@ def main():
     user_agent = config.search_settings.get('user_agent', 'TRR-Source-Scraper/1.0')
 
     # Step 1: Fetch MITRE ATT&CK information
-    print_progress("Step 1/5 — Fetching MITRE ATT&CK data...", args.verbose)
+    print_progress("Step 1/5 — Fetching MITRE ATT&CK data...", always=True, quiet=quiet)
     technique_info = fetch_mitre_technique(technique_id, user_agent)
 
     if technique_info:
-        print(f"         Technique: {technique_info.get('name', 'Unknown')}")
+        print_progress(f"         Technique: {technique_info.get('name', 'Unknown')}", always=True, quiet=quiet)
         if technique_info.get('tactics'):
-            print(f"         Tactics:   {', '.join(technique_info['tactics'])}")
+            print_progress(f"         Tactics:   {', '.join(technique_info['tactics'])}", always=True, quiet=quiet)
         if technique_info.get('platforms'):
-            print(f"         Platforms: {', '.join(technique_info['platforms'])}")
+            print_progress(f"         Platforms: {', '.join(technique_info['platforms'])}", always=True, quiet=quiet)
     else:
-        print("         Warning: Could not fetch MITRE ATT&CK page. Continuing with limited info.")
+        print_progress("         Warning: Could not fetch MITRE ATT&CK page. Continuing with limited info.", always=True, quiet=quiet)
 
     # Get technique name
     technique_name = args.name
@@ -532,56 +625,63 @@ def main():
         technique_name = technique_id
 
     # Step 2: Check for existing TRRs
-    print_progress("Step 2/5 — Checking for existing TRRs and DDMs...", args.verbose)
+    print_progress("Step 2/5 — Checking for existing TRRs and DDMs...", always=True, quiet=quiet)
     existing_trrs, existing_ddms = scan_for_existing_trrs(technique_id, technique_name)
 
     if existing_trrs:
-        print(f"         Found {len(existing_trrs)} existing TRR(s)")
+        print_progress(f"         Found {len(existing_trrs)} existing TRR(s)", always=True, quiet=quiet)
     if existing_ddms:
-        print(f"         Found {len(existing_ddms)} existing DDM(s)")
+        print_progress(f"         Found {len(existing_ddms)} existing DDM(s)", always=True, quiet=quiet)
     if not existing_trrs and not existing_ddms:
-        print("         No existing TRRs or DDMs found — this is a new technique to research")
+        print_progress("         No existing TRRs or DDMs found — this is a new technique to research", always=True, quiet=quiet)
 
-    # Step 2.5: Fetch Atomic Red Team tests
-    print_progress("Step 3/5 — Fetching Atomic Red Team emulation tests...", args.verbose)
+    # Step 3: Fetch Atomic Red Team tests
+    print_progress("Step 3/5 — Fetching Atomic Red Team emulation tests...", always=True, quiet=quiet)
     atomic_tests = fetch_atomic_tests(technique_id, user_agent)
 
     if atomic_tests:
-        print(f"         Found {len(atomic_tests)} Atomic Red Team test(s)")
+        print_progress(f"         Found {len(atomic_tests)} Atomic Red Team test(s)", always=True, quiet=quiet)
         for test in atomic_tests:
             platforms = ', '.join(test.get('platforms', []))
-            print(f"         - {test['name']} [{platforms}]")
+            print_progress(f"         - {test['name']} [{platforms}]", verbose=verbose, quiet=quiet)
     else:
-        print("         No Atomic Red Team tests found for this technique")
+        print_progress("         No Atomic Red Team tests found for this technique", always=True, quiet=quiet)
 
-    # Step 3: Search for sources
-    print_progress("Step 4/5 — Searching for research sources...", args.verbose)
-    print(f"         Searching across {len(config.trusted_sources)} source categories...")
-    print("         (This takes ~30–60 seconds due to rate limiting)")
+    # Step 4: Search for sources (skippable with --no-ddg)
+    if args.no_ddg:
+        print_progress("Step 4/5 — Skipping DuckDuckGo search (--no-ddg)", always=True, quiet=quiet)
+        search_results: Dict[str, List[Dict]] = {}
+    else:
+        print_progress("Step 4/5 — Searching for research sources...", always=True, quiet=quiet)
+        print_progress(f"         Searching across {len(config.trusted_sources)} source categories...", always=True, quiet=quiet)
+        print_progress("         (This takes ~30–60 seconds due to rate limiting)", always=True, quiet=quiet)
 
-    search_results = search_technique_sources(
-        technique_id=technique_id,
-        technique_name=technique_name,
-        categories=config.trusted_sources,
-        max_per_category=max_per_category,
-        user_agent=user_agent
-    )
+        search_results = search_technique_sources(
+            technique_id=technique_id,
+            technique_name=technique_name,
+            categories=config.trusted_sources,
+            max_per_category=max_per_category,
+            user_agent=user_agent,
+            extra_terms=args.extra_terms,
+            verbose=verbose,
+        )
 
-    total_results = sum(len(results) for results in search_results.values())
-    print(f"         Found {total_results} potential sources across all categories")
+        total_results = sum(len(r) for r in search_results.values())
+        print_progress(f"         Found {total_results} potential sources across all categories", always=True, quiet=quiet)
 
-    # Step 4: Enrich results with metadata (optional)
-    if not args.no_enrich and total_results > 0:
-        print_progress("Step 5/5 — Enriching results with page metadata...", args.verbose)
-        print("         Fetching page titles and descriptions (this may take a moment)...")
-
+    # Step 5: Enrich results with metadata (optional)
+    total_results = sum(len(r) for r in search_results.values())
+    if not args.no_enrich and not args.no_ddg and total_results > 0:
+        print_progress("Step 5/5 — Enriching results with page metadata...", always=True, quiet=quiet)
+        print_progress("         Fetching page titles and descriptions (this may take a moment)...", always=True, quiet=quiet)
         for category, results in search_results.items():
             if results:
                 search_results[category] = enrich_search_results(results, user_agent)
     else:
-        print_progress("Step 5/5 — Skipping metadata enrichment (--no-enrich)", args.verbose)
+        reason = "--no-ddg" if args.no_ddg else "--no-enrich" if args.no_enrich else "no results"
+        print_progress(f"Step 5/5 — Skipping metadata enrichment ({reason})", always=True, quiet=quiet)
 
-    # Step 5: Generate report
+    # Generate report
     report = generate_markdown_report(
         technique_id=technique_id,
         technique_info=technique_info,
@@ -589,16 +689,45 @@ def main():
         existing_ddms=existing_ddms,
         atomic_tests=atomic_tests,
         search_results=search_results,
-        config=config
+        config=config,
+        no_enrich=args.no_enrich,
+        no_ddg=args.no_ddg,
     )
 
-    # Save report
+    # Determine output filename suffix
+    if args.no_ddg:
+        filename_suffix = "offline_scan"
+    elif args.no_enrich:
+        filename_suffix = "quick_scan"
+    else:
+        filename_suffix = "research_brief"
+
+    # Save markdown report
     output_dir = args.output or Path(config.output_settings.get('default_output_dir', 'output'))
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_file = output_dir / f"{technique_id}_research_brief.md"
+    output_file = output_dir / f"{technique_id}_{filename_suffix}.md"
 
     with open(output_file, 'w', encoding='utf-8') as f:
         f.write(report)
+
+    # Optionally save JSON
+    if args.json:
+        json_file = output_dir / f"{technique_id}_{filename_suffix}.json"
+        raw_data = {
+            "technique_id": technique_id,
+            "technique_name": technique_name,
+            "generated": datetime.now().isoformat(),
+            "report_version": REPORT_VERSION,
+            "scan_mode": filename_suffix,
+            "technique_info": technique_info,
+            "existing_trrs": existing_trrs,
+            "existing_ddms": existing_ddms,
+            "atomic_tests": atomic_tests,
+            "search_results": search_results,
+        }
+        with open(json_file, 'w', encoding='utf-8') as f:
+            json.dump(raw_data, f, indent=2, ensure_ascii=False)
+        print(f"JSON saved to:  {json_file}")
 
     print("")
     print("=" * 55)
@@ -606,7 +735,8 @@ def main():
     print(f"Sources found:  {total_results}")
     print(f"ART tests:      {len(atomic_tests)}")
     print("")
-    print("Next step: Open the report and work through the Quick-Start Checklist.")
+    if not quiet:
+        print("Next step: Open the report and work through the Quick-Start Checklist.")
 
     return 0
 

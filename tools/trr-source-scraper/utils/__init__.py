@@ -17,6 +17,7 @@ from utils.helpers import (
     get_category_for_domain,
     format_date,
 )
+from utils.cache import get_cached, set_cached
 
 __all__ = [
     'RateLimiter',
@@ -32,4 +33,6 @@ __all__ = [
     'create_session',
     'get_category_for_domain',
     'format_date',
+    'get_cached',
+    'set_cached',
 ]

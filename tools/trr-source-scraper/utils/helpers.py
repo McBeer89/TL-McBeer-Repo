@@ -6,7 +6,7 @@ import time
 import re
 import json
 from pathlib import Path
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse
 from datetime import datetime
 from typing import Optional, Dict, List, Any
 import requests
@@ -110,7 +110,7 @@ def extract_domain(url: str) -> str:
     try:
         parsed = urlparse(url)
         return parsed.netloc.lower()
-    except:
+    except Exception:
         return ""
 
 
@@ -119,7 +119,7 @@ def is_valid_url(url: str) -> bool:
     try:
         parsed = urlparse(url)
         return all([parsed.scheme in ('http', 'https'), parsed.netloc])
-    except:
+    except Exception:
         return False
 
 
@@ -260,5 +260,5 @@ def format_date(date_str: Optional[str]) -> str:
             except ValueError:
                 continue
         return date_str[:10] if len(date_str) >= 10 else date_str
-    except:
+    except Exception:
         return "Unknown"

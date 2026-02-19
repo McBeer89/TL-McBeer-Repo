@@ -35,3 +35,9 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+
+# Tool backups
+*-backup-*/
+
+# Scraper cache
+tools/trr-source-scraper/output/.cache/

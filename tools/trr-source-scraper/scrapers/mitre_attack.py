@@ -11,6 +11,8 @@ from utils import (
     RateLimiter,
     clean_text,
     create_session,
+    get_cached,
+    set_cached,
 )
 
 
@@ -64,25 +66,32 @@ class MitreAttackScraper:
     def fetch_technique(self, technique_id: str) -> Optional[Dict]:
         """
         Fetch technique information from MITRE ATT&CK.
-        
+
+        Results are cached locally for 7 days to avoid redundant network calls.
+
         Args:
             technique_id: MITRE ATT&CK technique ID (e.g., T1003.006)
-            
+
         Returns:
             Dictionary with technique information or None if not found
         """
+        cache_key = f"mitre_{technique_id.upper()}"
+        cached = get_cached(cache_key)
+        if cached is not None:
+            return cached
+
         self.rate_limiter.wait()
         url = self._build_url(technique_id)
-        
+
         try:
             response = self.session.get(url, timeout=15)
             response.raise_for_status()
         except requests.RequestException as e:
             print(f"Error fetching MITRE ATT&CK page: {e}")
             return None
-        
+
         soup = BeautifulSoup(response.text, 'lxml')
-        
+
         result = {
             'id': technique_id.upper(),
             'url': url,
@@ -96,7 +105,8 @@ class MitreAttackScraper:
             'effective_permissions': self._extract_effective_permissions(soup),
             'references': self._extract_references(soup),
         }
-        
+
+        set_cached(cache_key, result)
         return result
     
     def _extract_name(self, soup: BeautifulSoup) -> str:

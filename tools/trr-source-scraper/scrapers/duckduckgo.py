@@ -42,9 +42,10 @@ class DuckDuckGoScraper:
 
     SEARCH_URL = "https://html.duckduckgo.com/html/"
 
-    def __init__(self, rate_limiter: Optional[RateLimiter] = None, user_agent: str = ""):
+    def __init__(self, rate_limiter: Optional[RateLimiter] = None, user_agent: str = "", verbose: bool = False):
         self.rate_limiter = rate_limiter or RateLimiter(delay=1.5)
         self.session = create_session(user_agent or "TRR-Source-Scraper/1.0")
+        self.verbose = verbose
 
     def search(self, query: str, max_results: int = 10) -> List[Dict]:
         """
@@ -81,7 +82,8 @@ class DuckDuckGoScraper:
                     })
             return results
         except Exception as e:
-            # Graceful fallback to HTML scraping
+            if self.verbose:
+                print(f"  [warn] DDGS API failed ({e}), falling back to HTML scraping")
             return self._search_via_html(query, max_results)
 
     def _search_via_html(self, query: str, max_results: int) -> List[Dict]:
@@ -216,7 +218,9 @@ def search_technique_sources(
     technique_name: str,
     categories: Dict,
     max_per_category: int = 10,
-    user_agent: str = ""
+    user_agent: str = "",
+    extra_terms: str = "",
+    verbose: bool = False,
 ) -> Dict[str, List[Dict]]:
     """
     Search for sources across multiple categories.
@@ -227,17 +231,20 @@ def search_technique_sources(
         categories: Dictionary of category configs from sources.json
         max_per_category: Maximum results per category
         user_agent: Custom user agent string
+        extra_terms: Additional search terms appended to every query
+        verbose: Print diagnostic information
 
     Returns:
         Dictionary mapping category names to lists of results
     """
-    scraper = DuckDuckGoScraper(user_agent=user_agent)
+    scraper = DuckDuckGoScraper(user_agent=user_agent, verbose=verbose)
     results = {}
 
+    extra = f" {extra_terms.strip()}" if extra_terms and extra_terms.strip() else ""
     base_queries = [
-        f"{technique_id} {technique_name}",
-        f"{technique_name} detection analysis",
-        f"{technique_id} attack technique",
+        f"{technique_id} {technique_name}{extra}",
+        f"{technique_name} detection analysis{extra}",
+        f"{technique_id} attack technique{extra}",
     ]
 
     for category_name, category_config in categories.items():
