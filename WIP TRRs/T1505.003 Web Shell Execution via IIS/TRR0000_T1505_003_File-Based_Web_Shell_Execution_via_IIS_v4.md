@@ -26,9 +26,18 @@ in future TRRs:
 - Fileless or memory-only web shells (such as those injected into the IIS
   pipeline via native modules, ISAPI filters/extensions, or reflection-based
   techniques)
+- ASP.NET Core applications hosted on IIS, which use a fundamentally different
+  execution model (IIS acts as a reverse proxy to Kestrel, or uses the
+  ASP.NET Core Module for in-process hosting) with different handler mapping
+  and compilation mechanics than the classic ASP/ASP.NET pipeline
 - PHP web shells on IIS via FastCGI, which involve a different execution model
   (`php-cgi.exe`) that is better addressed in a platform-agnostic report
 - Web shells on non-Windows platforms (Apache, Nginx, Tomcat, etc.)
+
+Server-Side Includes (SSI) via `ssinc.dll` are discussed in the Technical
+Background section but are not treated as a separate procedure. SSI-based web
+shells follow the same essential operations as Procedures A and B; only the
+handler and file extension differ, which are tangential elements.
 
 This technique maps to MITRE ATT&CK [T1505.003] (Server Software Component:
 Web Shell). It is also relevant to OWASP A02:2025 (Security Misconfiguration),
@@ -44,13 +53,23 @@ sending crafted HTTP requests to the shell's URL. The web server processes the
 request like any other page, but the web shell's code executes the attacker's
 commands and returns the results in the HTTP response.
 
-Web shells are attractive to adversaries because they provide persistent access
-that survives system reboots, blend in with normal web traffic on ports 80 and
-443 (making them difficult to distinguish from legitimate activity), and
-leverage the web server's existing execution capabilities without requiring
-additional software to be installed. On IIS, a web shell is typically an ASP or
-ASPX file placed in a web-accessible directory. Once planted, the attacker can
-return at any time by simply browsing to the web shell's URL.
+Web shells broadly fall into two categories: file-based and fileless.
+File-based web shells exist as script files on disk (such as `.aspx` or `.asp`
+files) and are executed through the web server's normal handler mappings.
+Fileless web shells operate entirely in memory, typically injected into the
+web server's processing pipeline through native modules, ISAPI extensions, or
+reflection-based techniques, and leave no script file on disk. This report
+covers file-based web shells on IIS exclusively; fileless web shells involve
+fundamentally different essential operations and are documented separately.
+
+File-based web shells are attractive to adversaries because they provide
+persistent access that survives system reboots, blend in with normal web
+traffic on ports 80 and 443 (making them difficult to distinguish from
+legitimate activity), and leverage the web server's existing execution
+capabilities without requiring additional software to be installed. On IIS, a
+file-based web shell is typically an ASP or ASPX file placed in a
+web-accessible directory. Once planted, the attacker can return at any time by
+simply browsing to the web shell's URL.
 
 ## Technical Background
 
@@ -80,7 +99,7 @@ websites or applications hosted on the same IIS server can be assigned to
 different application pools, giving each its own worker process with its own
 security identity and resource limits. The application pool's configured
 identity determines the security context under which all code in that pool
-executes — including any web shell code.
+executes â€” including any web shell code.
 
 By default, application pools run under low-privilege virtual accounts (e.g.,
 `IIS AppPool\DefaultAppPool`). However, administrators sometimes configure
@@ -125,10 +144,10 @@ processing.
 On a default IIS installation with ASP.NET enabled, the following extensions are
 mapped to executable handlers:
 
-- `.aspx` — processed by the ASP.NET engine
-- `.asp` — processed by the Classic ASP engine
-- `.ashx` — processed by the ASP.NET generic handler
-- `.asmx` — processed by the ASP.NET web service handler
+- `.aspx` â€” processed by the ASP.NET engine
+- `.asp` â€” processed by the Classic ASP engine
+- `.ashx` â€” processed by the ASP.NET generic handler
+- `.asmx` â€” processed by the ASP.NET web service handler
 
 IIS also supports Server-Side Includes (SSI) via the `ssinc.dll` ISAPI
 extension. If SSI is enabled, files with extensions `.shtml`, `.stm`, and
@@ -140,7 +159,7 @@ If PHP or other third-party handlers have been configured, their associated
 extensions (such as `.php`) will also be executable. For a web shell to function
 under default handler mappings, it must use a file extension that is already
 mapped to an executable handler. This is an essential and immutable constraint
-— unless the attacker modifies the handler mappings themselves (see the
+â€” unless the attacker modifies the handler mappings themselves (see the
 web.config section below).
 
 ### ASP vs. ASP.NET Execution
@@ -165,7 +184,7 @@ the compilation may occur in-process.
 
 The creation of a compiled DLL in the Temporary ASP.NET Files directory is an
 observable artifact that can serve as an additional detection signal for ASPX
-web shells. However, this artifact is not unique to web shells — any legitimate
+web shells. However, this artifact is not unique to web shells â€” any legitimate
 `.aspx` page produces the same compilation artifact on its first request.
 
 ### The Web Root and Virtual Directories
@@ -194,19 +213,33 @@ their web shell with that innocuous extension, bypassing any security controls
 that monitor only traditional script extensions. Second, and more directly, the
 attacker can define an inline `IHttpHandler` within the `web.config` file
 itself, effectively turning the configuration file into the web shell. In this
-variant, no separate script file is needed at all — the `web.config` is the
+variant, no separate script file is needed at all â€” the `web.config` is the
 sole file the attacker must write.
 
 When a `web.config` file is placed in a subdirectory, IIS dynamically reloads
 that directory's configuration without requiring a server restart. This means
 the attacker's handler manipulation takes effect immediately.
 
-Additionally, IIS supports an Application Initialization feature that can
-preload pages when an application pool starts. If an attacker can configure
-this via `web.config`, IIS itself would automatically send an internal request
-to the web shell whenever the app pool recycles or the server reboots. This
-eliminates the need for the attacker to send their own trigger request,
-providing an additional persistence enhancement.
+### IIS Application Initialization
+
+IIS supports an Application Initialization feature that can be configured
+through `web.config`. This feature causes IIS to automatically send internal
+warmup requests to specified pages whenever an application pool starts,
+recycles, or the server reboots. Under normal use, this ensures that frequently
+accessed pages are pre-compiled and cached before the first real user request
+arrives.
+
+However, this feature has significant implications for web shell persistence.
+If an attacker can configure Application Initialization via `web.config` and
+designate the web shell as a preload page, IIS itself will automatically
+trigger the web shell without the attacker needing to send their own HTTP
+request. This transforms the web shell from a passive backdoor that waits for
+the attacker to connect into an active one that executes on every app pool
+lifecycle event. For a persistence-focused technique, this is a meaningful
+escalation: it ensures the web shell's code runs even if the attacker loses
+their ability to send requests to the server, and it generates the trigger
+request from IIS internally rather than from an external source that might be
+visible in network monitoring.
 
 ## Procedures
 
@@ -223,7 +256,7 @@ activity. In this procedure, a malicious script file (typically `.aspx` or
 `.asp`) is placed in a web-accessible directory on an IIS server. The file may
 be delivered by creating a new file in the web root or by injecting web shell
 code into an existing legitimate file. The method by which the file reaches the
-server is outside the scope of this procedure — it could be delivered via
+server is outside the scope of this procedure â€” it could be delivered via
 exploitation of a file upload vulnerability, through compromised administrative
 credentials, by an attacker with existing access to the server, or through many
 other means. The delivery method is tangential: the essential prerequisite is
@@ -248,8 +281,8 @@ directly.
 
 What distinguishes this procedure is what happens next: the web shell code
 calls a process-creation API (such as `System.Diagnostics.Process.Start()` in
-.NET) to launch an external program — most commonly `cmd.exe` or
-`powershell.exe` — with command-line arguments provided by the attacker in the
+.NET) to launch an external program â€” most commonly `cmd.exe` or
+`powershell.exe` â€” with command-line arguments provided by the attacker in the
 HTTP request. This spawns a new child process under `w3wp.exe`. The child
 process executes the attacker's operating system command, and the output is
 captured by the web shell code and returned to the attacker in the HTTP
@@ -309,7 +342,7 @@ integrity monitoring detecting the appearance of new script files in the web
 root.
 
 The specific .NET API calls made by the web shell are attacker-controlled and
-effectively infinite in variety — the attacker can use any API available to the
+effectively infinite in variety â€” the attacker can use any API available to the
 .NET framework. As such, the individual API calls are tangential to the
 procedure and are not modeled in the DDM. However, the side effects of those
 API calls may produce telemetry depending on the specific action: file
@@ -324,7 +357,7 @@ logs, and registry access may produce Sysmon Events 12-14.
 The DDM for Procedure B is identical to Procedure A through the Execute Code
 operation. It diverges at the final step, where instead of a process spawn,
 the web shell calls .NET APIs directly. The Call .NET API operation has no
-direct telemetry — you cannot observe the API call itself. Detection for this
+direct telemetry â€” you cannot observe the API call itself. Detection for this
 procedure therefore depends on the file creation event (Sysmon 11 when the web
 shell is first written to disk), IIS log analysis (W3C logs showing requests to
 the shell's URL), and any telemetry produced by the side effects of the API
@@ -334,7 +367,10 @@ in-process API calls can evade most process-based detection strategies.
 
 ### Procedure C: Web Shell via web.config Manipulation
 
-This procedure differs from Procedures A and B at the prerequisite stage. Rather
+This procedure differs from Procedures A and B at the prerequisite stage rather
+than at the execution stage. It is modeled as a distinct procedure because the
+Write Config operation fundamentally changes the behavior of the IIS handler
+matching process, introducing a different essential operation chain. Rather
 than placing a traditional script file on disk and relying on default IIS
 handler mappings, the attacker writes or modifies a `web.config` file in a
 web-accessible directory to change how IIS handles requests for that directory.
@@ -352,7 +388,7 @@ monitor only for traditional script extensions.
 In the second and more direct variant, the attacker defines an inline
 `IHttpHandler` directly within the `web.config` file. The handler's code is
 embedded in the configuration XML and executes when a matching request arrives.
-In this case, the `web.config` file is the sole file the attacker must write —
+In this case, the `web.config` file is the sole file the attacker must write â€”
 no separate script file is needed.
 
 Both variants share a critical prerequisite operation: writing a `web.config`
@@ -366,11 +402,13 @@ matches, and code is executed inside `w3wp.exe`. The post-execution behavior
 as in the other procedures.
 
 An additional persistence enhancement is possible if the attacker configures
-IIS Application Initialization via the `web.config`. This feature causes IIS to
-automatically send an internal warmup request to specified pages when the
-application pool starts. If the attacker sets the web shell as a preload page,
-IIS itself will trigger the web shell on every app pool recycle or server
-reboot, eliminating the need for the attacker to send their own HTTP request.
+IIS Application Initialization via the `web.config` (described in the
+Technical Background section above). By designating the web shell as a preload
+page, IIS itself will trigger the web shell on every app pool recycle or
+server reboot, eliminating the need for the attacker to send their own HTTP
+request. This transforms the web shell from a passive backdoor into one that
+auto-executes on server lifecycle events, and the trigger request originates
+from IIS internally rather than from an external source.
 
 The primary detection opportunity for this procedure is monitoring for the
 creation or modification of `web.config` files in web-accessible directories.
@@ -385,11 +423,11 @@ making new or modified `web.config` files a high-fidelity detection signal.
 
 The DDM for Procedure C shows the Write Config operation feeding into Match
 Handler, reflecting the fact that it modifies how handler matching behaves. In
-the inline handler variant, Write Config is the sole prerequisite operation —
+the inline handler variant, Write Config is the sole prerequisite operation â€”
 no separate Create New File or Modify Existing File operation is needed. In the
 custom handler mapping variant, Write Config is accompanied by a file operation
 to place the web shell with an unusual extension. The downstream pipeline
-(Route Request → Match Handler → Execute Code) is structurally the same as in
+(Route Request â†’ Match Handler â†’ Execute Code) is structurally the same as in
 Procedures A and B, but Match Handler now operates against the attacker-defined
 handler mappings rather than the server defaults. The post-execution branch
 between process spawn and .NET API calls remains the same, as post-execution
