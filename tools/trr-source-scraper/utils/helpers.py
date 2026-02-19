@@ -109,6 +109,80 @@ def normalize_technique_id(technique_id: str) -> str:
     return technique_id
 
 
+def is_generic_landing_page(url: str) -> bool:
+    """
+    Return True if the URL points to a generic landing/index page
+    rather than a specific content page.
+    """
+    try:
+        parsed = urlparse(url)
+        path = parsed.path.rstrip('/')
+
+        # Explicit blocklist of known generic paths
+        generic_paths = {
+            '', '/en-us', '/en-us/docs', '/en-us/previous-versions',
+            '/html/archives.html', '/docs', '/blog', '/resources',
+        }
+        if path.lower() in generic_paths:
+            return True
+
+        # Paths with 1 or fewer segments and no query are almost always landing pages
+        segments = [s for s in path.split('/') if s]
+        if len(segments) <= 1 and not parsed.query:
+            return True
+
+        return False
+    except Exception:
+        return False
+
+
+def compute_relevance_score(
+    result: dict,
+    technique_id: str,
+    technique_name: str,
+    mitre_ref_domains: set = None,
+) -> float:
+    """
+    Score a search result 0.0–1.0 based on how likely it is to contain
+    substantive content about the given ATT&CK technique.
+    """
+    score = 0.0
+    short_name = (
+        technique_name.split(":")[-1].strip().lower()
+        if ":" in technique_name
+        else technique_name.lower()
+    )
+    tid_lower = technique_id.lower()
+
+    title = (result.get('title') or '').lower()
+    desc = (result.get('description') or '').lower()
+    url = (result.get('url') or '').lower()
+    domain = (result.get('domain') or '').lower()
+
+    # Title signals (strongest indicator)
+    if tid_lower in title:
+        score += 0.30
+    if short_name and short_name in title:
+        score += 0.25
+
+    # Description / snippet signals
+    if tid_lower in desc:
+        score += 0.15
+    if short_name and short_name in desc:
+        score += 0.10
+
+    # URL path contains technique ID (e.g., /T1003/006)
+    tid_in_path = tid_lower.replace('.', '/') if '.' in tid_lower else tid_lower
+    if tid_lower in url or tid_in_path in url:
+        score += 0.10
+
+    # Domain appears in MITRE's own references (strong trust signal)
+    if mitre_ref_domains and domain in mitre_ref_domains:
+        score += 0.10
+
+    return min(score, 1.0)
+
+
 def extract_domain(url: str) -> str:
     """Extract the domain from a URL."""
     try:

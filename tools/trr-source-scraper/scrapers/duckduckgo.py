@@ -5,6 +5,7 @@ Uses the ddgs Python package for reliable, API-based search access.
 Falls back to HTML scraping if ddgs is not installed.
 """
 
+import hashlib
 import re
 import time
 import urllib.parse
@@ -29,6 +30,9 @@ from utils import (
     create_session,
     is_valid_url,
     extract_domain,
+    is_generic_landing_page,
+    get_cached,
+    set_cached,
 )
 
 
@@ -42,10 +46,17 @@ class DuckDuckGoScraper:
 
     SEARCH_URL = "https://html.duckduckgo.com/html/"
 
-    def __init__(self, rate_limiter: Optional[RateLimiter] = None, user_agent: str = "", verbose: bool = False):
+    def __init__(self, rate_limiter: Optional[RateLimiter] = None, user_agent: str = "",
+                 verbose: bool = False, use_cache: bool = True):
         self.rate_limiter = rate_limiter or RateLimiter(delay=1.5)
         self.session = create_session(user_agent or "TRR-Source-Scraper/1.0")
         self.verbose = verbose
+        self.use_cache = use_cache
+
+    @staticmethod
+    def _cache_key(query: str) -> str:
+        """Generate a stable cache key for a search query."""
+        return f"ddg_{hashlib.md5(query.encode()).hexdigest()}"
 
     def search(self, query: str, max_results: int = 10) -> List[Dict]:
         """
@@ -58,11 +69,27 @@ class DuckDuckGoScraper:
         Returns:
             List of dictionaries with 'title', 'url', 'description' keys
         """
+        # Check cache first (1-day TTL)
+        if self.use_cache:
+            cache_key = self._cache_key(query)
+            cached = get_cached(cache_key, ttl_days=1)
+            if cached is not None:
+                if self.verbose:
+                    print(f"  [cache] Hit for query: {query[:60]}...")
+                return cached
+
         self.rate_limiter.wait()
 
         if DDGS_AVAILABLE:
-            return self._search_via_ddgs(query, max_results)
-        return self._search_via_html(query, max_results)
+            results = self._search_via_ddgs(query, max_results)
+        else:
+            results = self._search_via_html(query, max_results)
+
+        # Store in cache
+        if self.use_cache and results:
+            set_cached(self._cache_key(query), results)
+
+        return results
 
     def _search_via_ddgs(self, query: str, max_results: int) -> List[Dict]:
         """Use the ddgs package for searching."""
@@ -213,6 +240,44 @@ class DuckDuckGoScraper:
         return all_results
 
 
+def _build_queries(
+    technique_id: str,
+    technique_name: str,
+    category_name: str,
+    extra: str,
+) -> List[str]:
+    """
+    Build search queries tailored to each category's purpose.
+
+    Returns 2-3 queries per category, using exact-phrase quoting on the
+    technique's short name to force DuckDuckGo to match precisely.
+    """
+    # For sub-techniques like "OS Credential Dumping: DCSync", extract "DCSync"
+    short_name = (
+        technique_name.split(":")[-1].strip()
+        if ":" in technique_name
+        else technique_name
+    )
+
+    # Shared precise queries used across most categories
+    common = [
+        f'"{technique_id}" "{short_name}"{extra}',
+        f'"{short_name}" detection{extra}',
+    ]
+
+    category_specific = {
+        'security_research': [f'"{short_name}" attack analysis write-up{extra}'],
+        'microsoft_docs': [f'"{short_name}" site:learn.microsoft.com OR site:techcommunity.microsoft.com{extra}'],
+        'conferences': [f'"{short_name}" presentation talk defcon OR blackhat{extra}'],
+        'github': [f'"{technique_id}" detection rule{extra}'],
+        'sigma_rules': [f'site:github.com/SigmaHQ/sigma "{technique_id}"'],
+        'lolbas_gtfobins': [f'"{short_name}" LOLBAS OR GTFOBins{extra}'],
+        'academic': [f'"{short_name}" detection research paper{extra}'],
+    }
+
+    return common + category_specific.get(category_name, [])
+
+
 def search_technique_sources(
     technique_id: str,
     technique_name: str,
@@ -221,6 +286,8 @@ def search_technique_sources(
     user_agent: str = "",
     extra_terms: str = "",
     verbose: bool = False,
+    mitre_refs: Optional[List[Dict]] = None,
+    use_cache: bool = True,
 ) -> Dict[str, List[Dict]]:
     """
     Search for sources across multiple categories.
@@ -233,45 +300,73 @@ def search_technique_sources(
         user_agent: Custom user agent string
         extra_terms: Additional search terms appended to every query
         verbose: Print diagnostic information
+        mitre_refs: References extracted from the MITRE ATT&CK page (used
+                    to boost domains that MITRE itself cites)
+        use_cache: Whether to use cached search results (1-day TTL)
 
     Returns:
         Dictionary mapping category names to lists of results
     """
-    scraper = DuckDuckGoScraper(user_agent=user_agent, verbose=verbose)
+    scraper = DuckDuckGoScraper(user_agent=user_agent, verbose=verbose, use_cache=use_cache)
     results = {}
 
     extra = f" {extra_terms.strip()}" if extra_terms and extra_terms.strip() else ""
-    base_queries = [
-        f"{technique_id} {technique_name}{extra}",
-        f"{technique_name} detection analysis{extra}",
-        f"{technique_id} attack technique{extra}",
-    ]
+
+    # Extract domains from MITRE references — these are known to have
+    # technique-relevant content and can supplement the configured domain list
+    mitre_ref_domains = set()
+    if mitre_refs:
+        for ref in mitre_refs:
+            url = ref.get('url', '')
+            if url:
+                domain = extract_domain(url)
+                if domain:
+                    mitre_ref_domains.add(domain)
+
+    # Cross-category dedup: each URL appears in at most one category
+    global_seen_urls = set()
 
     for category_name, category_config in categories.items():
         category_results = []
         domains = category_config.get('domains', [])
         search_suffix = category_config.get('search_suffix', '')
 
-        # Use top 2 queries per category for better coverage
-        for base_query in base_queries[:2]:
-            full_query = f"{base_query} {search_suffix}".strip()
+        # Merge MITRE-cited domains into the domain list for this category
+        # (only domains not already present, limited to keep queries short)
+        combined_domains = list(domains)
+        for mrd in mitre_ref_domains:
+            if mrd not in combined_domains:
+                combined_domains.append(mrd)
+
+        queries = _build_queries(technique_id, technique_name, category_name, extra)
+
+        # Use top 2 queries for this category
+        for query in queries[:2]:
+            full_query = f"{query} {search_suffix}".strip()
 
             search_results = scraper.search_with_site_filter(
                 full_query,
-                domains,
+                combined_domains,
                 max_per_category
             )
 
             category_results.extend(search_results)
 
-        # Deduplicate and limit
+        # Deduplicate within + across categories, filter landing pages
         seen = set()
         unique_results = []
         for r in category_results:
-            if r['url'] not in seen:
-                seen.add(r['url'])
-                unique_results.append(r)
+            url = r['url']
+            if url in seen or url in global_seen_urls:
+                continue
+            if is_generic_landing_page(url):
+                if verbose:
+                    print(f"  [filter] Skipped generic landing page: {url}")
+                continue
+            seen.add(url)
+            unique_results.append(r)
 
+        global_seen_urls.update(seen)
         results[category_name] = unique_results[:max_per_category]
 
     return results

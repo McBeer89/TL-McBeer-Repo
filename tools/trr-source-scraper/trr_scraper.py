@@ -36,6 +36,7 @@ from scrapers import (
     search_technique_sources,
     scan_for_existing_trrs,
     enrich_search_results,
+    validate_search_result_links,
     fetch_atomic_tests,
 )
 from utils import (
@@ -44,11 +45,13 @@ from utils import (
     validate_technique_id,
     normalize_technique_id,
     clean_text,
+    compute_relevance_score,
+    extract_domain,
     format_date,
     get_category_for_domain,
 )
 
-REPORT_VERSION = "1.1"
+REPORT_VERSION = "1.2"
 
 
 def parse_args():
@@ -134,6 +137,18 @@ Examples:
         dest="trr_repo",
         default="",
         help="GitHub repo for TRR/DDM lookup (e.g., 'tired-labs/techniques'). Overrides config."
+    )
+
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Bypass the search result cache and force fresh DuckDuckGo queries"
+    )
+
+    parser.add_argument(
+        "--validate-links",
+        action="store_true",
+        help="Check link liveness via HEAD requests (works with --no-enrich for fast validation)"
     )
 
     return parser.parse_args()
@@ -540,7 +555,9 @@ def generate_markdown_report(
                 date = result.get('date')
                 domain = result.get('domain', '')
 
-                lines.append(f"### {i}. [{title}]({url})")
+                link_dead = result.get('link_status') == 'dead'
+                dead_tag = " (link may be broken)" if link_dead else ""
+                lines.append(f"### {i}. [{title}]({url}){dead_tag}")
                 lines.append("")
 
                 if domain:
@@ -554,7 +571,16 @@ def generate_markdown_report(
                     lines.append(f"**Excerpt:** {clean_text(description, excerpt_len)}")
                     lines.append("")
 
-                lines.append(f"**Relevance:** {priority.title()}")
+                score = result.get('relevance_score', 0)
+                if score >= 0.50:
+                    relevance_label = "Strong Match"
+                elif score >= 0.25:
+                    relevance_label = "Likely Relevant"
+                elif score >= 0.10:
+                    relevance_label = "Possible Match"
+                else:
+                    relevance_label = "Weak Match"
+                lines.append(f"**Relevance:** {relevance_label} ({score:.0%})")
                 lines.append("")
 
             lines.append("---")
@@ -688,6 +714,8 @@ def main():
             user_agent=user_agent,
             extra_terms=args.extra_terms,
             verbose=verbose,
+            mitre_refs=technique_info.get('references', []) if technique_info else None,
+            use_cache=not args.no_cache,
         )
 
         total_results = sum(len(r) for r in search_results.values())
@@ -701,9 +729,40 @@ def main():
         for category, results in search_results.items():
             if results:
                 search_results[category] = enrich_search_results(results, user_agent)
+    elif args.validate_links and not args.no_ddg and total_results > 0:
+        print_progress("Step 5/5 — Validating links (HEAD requests only)...", always=True, quiet=quiet)
+        for category, results in search_results.items():
+            if results:
+                search_results[category] = validate_search_result_links(results, user_agent)
     else:
         reason = "--no-ddg" if args.no_ddg else "--no-enrich" if args.no_enrich else "no results"
         print_progress(f"Step 5/5 — Skipping metadata enrichment ({reason})", always=True, quiet=quiet)
+
+    # Score, sort, and filter results by relevance
+    if search_results:
+        mitre_ref_domains = set()
+        if technique_info:
+            for ref in technique_info.get('references', []):
+                d = extract_domain(ref.get('url', ''))
+                if d:
+                    mitre_ref_domains.add(d)
+
+        min_score = config.search_settings.get('min_relevance_score', 0.10)
+
+        for category, results in search_results.items():
+            for r in results:
+                r['relevance_score'] = compute_relevance_score(
+                    r, technique_id, technique_name, mitre_ref_domains
+                )
+            # Sort by relevance score descending, then filter
+            results.sort(key=lambda r: r.get('relevance_score', 0), reverse=True)
+            search_results[category] = [
+                r for r in results if r.get('relevance_score', 0) >= min_score
+            ]
+
+        filtered_total = sum(len(r) for r in search_results.values())
+        if not quiet:
+            print_progress(f"         {filtered_total} sources passed relevance filtering (min score: {min_score})", always=True, quiet=quiet)
 
     # Generate report
     report = generate_markdown_report(

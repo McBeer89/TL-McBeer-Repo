@@ -100,7 +100,8 @@
     "delay_between_requests": 2,
     "timeout": 15,
     "max_retries": 3,
-    "user_agent": "TRR-Source-Scraper/1.0 (Educational Research Tool)"
+    "user_agent": "TRR-Source-Scraper/1.0 (Educational Research Tool)",
+    "min_relevance_score": 0.10
   },
   "output_settings": {
     "default_output_dir": "output",
