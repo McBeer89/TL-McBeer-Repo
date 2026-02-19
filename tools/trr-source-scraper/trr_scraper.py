@@ -66,6 +66,7 @@ Examples:
     python trr_scraper.py T1003.006 --extra-terms mimikatz # add terms to every query
     python trr_scraper.py T1003.006 --json                # also write JSON output
     python trr_scraper.py T1003.006 --quiet               # suppress progress output
+    python trr_scraper.py T1003.006 --trr-repo tired-labs/techniques  # override TRR repo
         """
     )
 
@@ -126,6 +127,13 @@ Examples:
         "--quiet", "-q",
         action="store_true",
         help="Suppress all output except the final 'Saved to:' line"
+    )
+
+    parser.add_argument(
+        "--trr-repo",
+        dest="trr_repo",
+        default="",
+        help="GitHub repo for TRR/DDM lookup (e.g., 'tired-labs/techniques'). Overrides config."
     )
 
     return parser.parse_args()
@@ -625,14 +633,30 @@ def main():
         technique_name = technique_id
 
     # Step 2: Check for existing TRRs
-    print_progress("Step 2/5 — Checking for existing TRRs and DDMs...", always=True, quiet=quiet)
-    existing_trrs, existing_ddms = scan_for_existing_trrs(technique_id, technique_name)
+    trr_cfg = config.trr_repository
+    github_repo = args.trr_repo or trr_cfg.get("github_repo", "")
+    branch = trr_cfg.get("branch", "main")
+    reports_path = trr_cfg.get("reports_path", "reports")
+
+    if github_repo:
+        print_progress(f"Step 2/5 — Checking {github_repo} for existing TRRs and DDMs...", always=True, quiet=quiet)
+    else:
+        print_progress("Step 2/5 — No TRR repository configured — skipping", always=True, quiet=quiet)
+
+    existing_trrs, existing_ddms = scan_for_existing_trrs(
+        technique_id,
+        technique_name,
+        github_repo=github_repo,
+        branch=branch,
+        reports_path=reports_path,
+        user_agent=user_agent,
+    )
 
     if existing_trrs:
         print_progress(f"         Found {len(existing_trrs)} existing TRR(s)", always=True, quiet=quiet)
     if existing_ddms:
         print_progress(f"         Found {len(existing_ddms)} existing DDM(s)", always=True, quiet=quiet)
-    if not existing_trrs and not existing_ddms:
+    if github_repo and not existing_trrs and not existing_ddms:
         print_progress("         No existing TRRs or DDMs found — this is a new technique to research", always=True, quiet=quiet)
 
     # Step 3: Fetch Atomic Red Team tests

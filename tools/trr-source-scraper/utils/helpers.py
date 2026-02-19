@@ -77,6 +77,10 @@ class ConfigManager:
     def trusted_sources(self) -> Dict:
         return self.config.get("trusted_sources", {})
 
+    @property
+    def trr_repository(self) -> Dict:
+        return self.config.get("trr_repository", {})
+
 
 def validate_technique_id(technique_id: str) -> bool:
     """
