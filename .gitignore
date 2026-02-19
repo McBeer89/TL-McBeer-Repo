@@ -36,6 +36,9 @@ env/
 .DS_Store
 Thumbs.db
 
+# Claude Code project settings (local, machine-specific)
+.claude/
+
 # Tool backups
 *-backup-*/
 
