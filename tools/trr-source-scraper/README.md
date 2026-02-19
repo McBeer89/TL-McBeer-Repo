@@ -67,6 +67,12 @@ python trr_scraper.py T1003.006 --max-per-category 5
 # Also write raw JSON output alongside the markdown report
 python trr_scraper.py T1003.006 --json
 
+# Only include high-confidence results (50%+ relevance)
+python trr_scraper.py T1003.006 --min-score 0.5
+
+# Include all results regardless of score
+python trr_scraper.py T1003.006 --min-score 0.0
+
 # Force fresh search results (bypass 1-day cache)
 python trr_scraper.py T1003.006 --no-cache
 
@@ -95,6 +101,7 @@ python trr_scraper.py T1003.006 --quiet
 | `--no-cache` | - | Bypass search result cache and force fresh queries |
 | `--validate-links` | - | Check link liveness via HEAD requests |
 | `--trr-repo` | - | Override GitHub repo for TRR/DDM lookup |
+| `--min-score` | - | Minimum relevance score (0.0–1.0) to include a result (default: 0.25) |
 | `--verbose` | `-v` | Print detailed progress and diagnostic information |
 | `--quiet` | `-q` | Suppress all output except the final save confirmation |
 
@@ -148,7 +155,7 @@ Each source link is scored 0-100% based on how likely it is to contain substanti
 - **Strong Match** (50%+) - Technique ID and name prominently featured
 - **Likely Relevant** (25-49%) - Clear technique references found
 - **Possible Match** (10-24%) - Indirect or partial references
-- Results below 10% are filtered out (configurable via `min_relevance_score`)
+- Results below 25% are filtered out by default (configurable via `--min-score` or `min_relevance_score` in config)
 
 ### Search Result Caching
 
@@ -184,7 +191,7 @@ Add or modify trusted sources in the `trusted_sources` section:
     "timeout": 15,
     "max_retries": 3,
     "user_agent": "TRR-Source-Scraper/1.0 (Educational Research Tool)",
-    "min_relevance_score": 0.10
+    "min_relevance_score": 0.25
   }
 }
 ```
