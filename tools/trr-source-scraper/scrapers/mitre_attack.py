@@ -106,6 +106,11 @@ class MitreAttackScraper:
             'references': self._extract_references(soup),
         }
 
+        # Fallback: current ATT&CK (v16+) removed Data Sources from technique
+        # pages.  Fetch from the archived v15 page if the live page had none.
+        if not result['data_sources']:
+            result['data_sources'] = self._fetch_data_sources_from_archive(technique_id)
+
         set_cached(cache_key, result)
         return result
     
@@ -205,15 +210,14 @@ class MitreAttackScraper:
         """Extract data sources for detection."""
         data_sources = []
 
-        # Current ATT&CK site: card-data div with "Data Sources" label
-        for card_data in soup.find_all('div', class_='card-data'):
-            label = card_data.find('span', class_='h5')
+        # Strategy 1: card-data/card-body div with "Data Sources" label (ATT&CK v10-v15)
+        for card_data in soup.find_all('div', class_=['card-data', 'card-body']):
+            label = card_data.find('span', class_=['h5', 'card-title'])
             if label and 'data source' in label.get_text().lower():
                 for a in card_data.find_all('a'):
                     text = clean_text(a.get_text())
                     if text:
                         data_sources.append(text)
-                # Also extract plain text if no links
                 if not data_sources:
                     raw = card_data.get_text(separator=',').replace(label.get_text(), '')
                     for part in raw.split(','):
@@ -221,20 +225,85 @@ class MitreAttackScraper:
                         if part:
                             data_sources.append(part)
 
-        # Fallback: heading-based search
+        # Strategy 2: Links to /datasources/ or /datacomponents/ anywhere on page
+        if not data_sources:
+            for a in soup.find_all('a', href=True):
+                href = a.get('href', '')
+                if '/datasources/' in href or '/datacomponents/' in href:
+                    text = clean_text(a.get_text())
+                    if text and text not in data_sources:
+                        data_sources.append(text)
+
+        # Strategy 3: Detection section table (v15 archived format)
         if not data_sources:
             for heading in soup.find_all(['h2', 'h3']):
-                if 'data source' in heading.get_text().lower():
+                heading_text = heading.get_text().lower()
+                if 'detection' in heading_text or 'data source' in heading_text:
+                    table = heading.find_next('table')
+                    if table:
+                        for a in table.find_all('a', href=True):
+                            href = a.get('href', '')
+                            if '/datasources/' in href or '/datacomponents/' in href:
+                                text = clean_text(a.get_text())
+                                if text and text not in data_sources:
+                                    data_sources.append(text)
+                    # Also check sibling elements for datasource links
                     sibling = heading.find_next_sibling()
-                    while sibling and sibling.name in ['p', 'ul', 'div']:
-                        for a in sibling.find_all('a'):
-                            text = clean_text(a.get_text())
-                            if text:
-                                data_sources.append(text)
+                    while sibling and sibling.name in ['p', 'ul', 'ol', 'div', 'table']:
+                        for a in sibling.find_all('a', href=True):
+                            href = a.get('href', '')
+                            if '/datasources/' in href or '/datacomponents/' in href:
+                                text = clean_text(a.get_text())
+                                if text and text not in data_sources:
+                                    data_sources.append(text)
                         sibling = sibling.find_next_sibling()
 
         return list(dict.fromkeys(data_sources))
     
+    def _fetch_data_sources_from_archive(self, technique_id: str) -> List[str]:
+        """
+        Fetch data sources from the archived ATT&CK v15 page.
+
+        The current live ATT&CK site (v16+) removed the Data Sources section
+        from technique pages. The v15 archive still lists them in a Detection
+        table with links to /datasources/ paths.
+
+        Results are cached for 30 days.
+        """
+        cache_key = f"archive_datasources_{technique_id.upper()}"
+        cached = get_cached(cache_key, ttl_days=30)
+        if cached is not None:
+            return cached
+
+        parent, sub = self._parse_technique_id(technique_id)
+        if sub:
+            url = f"https://attack.mitre.org/versions/v15/techniques/{parent}/{sub}/"
+        else:
+            url = f"https://attack.mitre.org/versions/v15/techniques/{parent}/"
+
+        try:
+            response = self.session.get(url, timeout=15)
+            response.raise_for_status()
+        except requests.RequestException:
+            return []
+
+        soup = BeautifulSoup(response.text, 'lxml')
+        data_sources = []
+
+        # The v15 page lists data sources as links to /datasources/ and /datacomponents/
+        for a in soup.find_all('a', href=True):
+            href = a.get('href', '')
+            if '/datasources/' in href or '/datacomponents/' in href:
+                text = clean_text(a.get_text())
+                if text and text not in data_sources:
+                    data_sources.append(text)
+
+        data_sources = list(dict.fromkeys(data_sources))
+        if data_sources:
+            set_cached(cache_key, data_sources)
+
+        return data_sources
+
     def _extract_defense_bypassed(self, soup: BeautifulSoup) -> List[str]:
         """Extract defenses bypassed by this technique."""
         defenses = []

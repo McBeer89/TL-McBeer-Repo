@@ -24,6 +24,23 @@ from utils import create_session
 RAW_BASE = "https://raw.githubusercontent.com/{repo}/{branch}/{path}"
 TREE_API = "https://api.github.com/repos/{repo}/git/trees/{branch}?recursive=1"
 
+# Words that appear frequently in ATT&CK technique names but carry
+# little discriminative value for name-based matching against TRR content.
+ATTACK_STOPWORDS = frozenset({
+    "server", "software", "component", "system", "service",
+    "access", "execution", "remote", "credential", "valid",
+    "local", "external", "application", "protocol", "domain",
+    "trusted", "native", "scheduled", "windows", "create",
+    "modify", "default", "network", "use", "abuse",
+    "data", "account", "code", "file", "cloud",
+    "signed", "binary", "process", "command", "scripts",
+    "user", "logon", "event", "traffic", "object",
+    "registry", "stored", "manipulation", "discovery",
+    "collection", "impact", "resource", "exploit",
+    "compromise", "obtain", "establish", "develop",
+    "stage", "gather", "phishing",
+})
+
 
 # ---------------------------------------------------------------------------
 # Shared content-matching logic (used by both scanner backends)
@@ -57,14 +74,47 @@ def _match_trr_content(
         match_type = 'parent'
         match_score = 75
     elif technique_name:
-        name_words = technique_name.lower().split()
-        content_lower = content.lower()
-        word_matches = sum(
-            1 for word in name_words if len(word) > 3 and word in content_lower
+        # For sub-techniques ("Parent: Sub"), focus on the sub-technique name
+        matching_name = (
+            technique_name.split(":")[-1].strip()
+            if ":" in technique_name
+            else technique_name
         )
-        if word_matches >= min(2, len(name_words)):
-            match_type = 'name'
-            match_score = 50
+
+        # Extract distinctive words: >= 3 chars and not in the stopword set
+        name_words = [
+            w for w in matching_name.lower().split()
+            if len(w) >= 3 and w not in ATTACK_STOPWORDS
+        ]
+
+        content_lower = content.lower()
+        if len(name_words) >= 2:
+            # For short names (2-3 words), require the phrase to appear
+            # as a unit to avoid matching documents that happen to use each
+            # word in unrelated contexts.
+            phrase = matching_name.lower()
+            if len(name_words) <= 3 and re.search(
+                rf'\b{re.escape(phrase)}\b', content_lower
+            ):
+                match_type = 'name'
+                match_score = 50
+            elif len(name_words) > 3:
+                # Longer names: use whole-word matching with >50% threshold
+                word_matches = sum(
+                    1 for word in name_words
+                    if re.search(rf'\b{re.escape(word)}\b', content_lower)
+                )
+                threshold = max(2, (len(name_words) + 1) // 2)
+                if word_matches >= threshold:
+                    match_type = 'name'
+                    match_score = 50
+        elif len(name_words) == 1:
+            # Single distinctive word — require whole-word match to avoid
+            # substring false positives (e.g., "shell" in "powershell")
+            word = name_words[0]
+            if re.search(rf'\b{re.escape(word)}\b', content_lower):
+                match_type = 'name'
+                match_score = 40
 
     if match_type is None:
         return None

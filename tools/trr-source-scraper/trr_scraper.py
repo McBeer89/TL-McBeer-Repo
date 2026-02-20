@@ -46,6 +46,7 @@ from utils import (
     normalize_technique_id,
     clean_text,
     compute_relevance_score,
+    deduplicate_results,
     extract_domain,
     format_date,
     get_category_for_domain,
@@ -396,6 +397,13 @@ def generate_markdown_report(
 
     # Header
     technique_name = technique_info.get('name', 'Unknown') if technique_info else 'Unknown'
+    # For sub-techniques, use the short name after the colon for search queries.
+    # "Server Software Component: Web Shell" → "Web Shell"
+    common_name = (
+        technique_name.split(":")[-1].strip()
+        if ":" in technique_name
+        else technique_name
+    )
     lines.append(f"# TRR Research Brief: {technique_id} — {technique_name}")
     lines.append("")
     lines.append(f"**Generated:** {timestamp}")
@@ -610,7 +618,7 @@ def generate_markdown_report(
     lines.append("")
 
     # Core queries
-    lines.append(f'- `"{technique_name}" {technique_id} detection`')
+    lines.append(f'- `"{common_name}" {technique_id} detection`')
     lines.append(f'- `site:github.com/SigmaHQ/sigma {technique_id}`')
     lines.append(f'- `site:github.com/redcanaryco/atomic-red-team {technique_id}`')
     lines.append("")
@@ -621,7 +629,7 @@ def generate_markdown_report(
     for category, cat_config in config.trusted_sources.items():
         if cat_config.get('priority') == 'high':
             for domain in cat_config.get('domains', [])[:6]:
-                lines.append(f'- `site:{domain} "{technique_name}"`')
+                lines.append(f'- `site:{domain} "{common_name}"`')
 
     lines.append("")
     lines.append("---")
@@ -797,6 +805,18 @@ def main():
             print_progress(
                 f"         {filtered_total} sources passed relevance filtering "
                 f"(min score: {min_score:.0%}, {filtered_count} excluded)",
+                always=True, quiet=quiet,
+            )
+
+    # Deduplicate across categories (GitHub forks, academic paper formats, etc.)
+    if search_results:
+        pre_dedup_total = sum(len(r) for r in search_results.values())
+        search_results = deduplicate_results(search_results, verbose=verbose)
+        post_dedup_total = sum(len(r) for r in search_results.values())
+        dedup_removed = pre_dedup_total - post_dedup_total
+        if dedup_removed > 0:
+            print_progress(
+                f"         Removed {dedup_removed} duplicate(s) across categories",
                 always=True, quiet=quiet,
             )
 

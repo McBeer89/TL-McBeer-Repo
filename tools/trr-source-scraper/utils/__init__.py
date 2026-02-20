@@ -18,6 +18,7 @@ from utils.helpers import (
     create_session,
     get_category_for_domain,
     format_date,
+    deduplicate_results,
 )
 from utils.cache import get_cached, set_cached
 
@@ -37,6 +38,7 @@ __all__ = [
     'create_session',
     'get_category_for_domain',
     'format_date',
+    'deduplicate_results',
     'get_cached',
     'set_cached',
 ]

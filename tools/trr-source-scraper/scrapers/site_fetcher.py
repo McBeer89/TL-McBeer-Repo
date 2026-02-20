@@ -107,6 +107,47 @@ class SiteFetcher:
         return results
 
 
+def _is_video_platform_url(url: str) -> bool:
+    """Check if a URL is from a video platform (YouTube, Vimeo, etc.)."""
+    domain = extract_domain(url)
+    return domain in (
+        'youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtu.be',
+        'vimeo.com', 'www.vimeo.com',
+    )
+
+
+def _clean_video_title(title: str) -> str:
+    """
+    Clean a potentially garbled video title from DuckDuckGo.
+
+    DDG sometimes concatenates the main video title with sidebar suggestions,
+    producing strings like "Main Title DEF CON 24 Another Talk Black Hat..."
+
+    Heuristic: if the title is unreasonably long, truncate at the first
+    plausible separator boundary.
+    """
+    if not title:
+        return title
+
+    # Strip common platform suffixes
+    for suffix in (' - YouTube', ' - Vimeo', ' | YouTube', ' | Vimeo'):
+        if title.endswith(suffix):
+            title = title[:-len(suffix)]
+
+    # If still reasonable length, return as-is
+    if len(title) <= 120:
+        return title.strip()
+
+    # Try to find a natural break: separators that suggest concatenation
+    for separator in [' | ', ' - ', ' — ', ' – ']:
+        parts = title.split(separator, 2)
+        if len(parts) >= 2 and len(parts[0]) > 15:
+            return parts[0].strip()
+
+    # Last resort: hard truncate with ellipsis
+    return title[:117].rsplit(' ', 1)[0] + '...'
+
+
 def enrich_search_results(results: List[Dict], user_agent: str = "") -> List[Dict]:
     """
     Enrich search results with page metadata.
@@ -129,8 +170,11 @@ def enrich_search_results(results: List[Dict], user_agent: str = "") -> List[Dic
         if not url:
             continue
 
-        # Don't re-fetch if we already have good metadata
-        if result.get('title') and result.get('description'):
+        is_video = _is_video_platform_url(url)
+
+        # Don't re-fetch if we already have good metadata —
+        # UNLESS this is a video platform URL (DDG titles are often garbled)
+        if not is_video and result.get('title') and result.get('description'):
             if len(result.get('description', '')) > 50:
                 result.setdefault('link_status', 'ok')
                 enriched.append(result)
@@ -139,10 +183,16 @@ def enrich_search_results(results: List[Dict], user_agent: str = "") -> List[Dic
         metadata = fetcher.fetch_page_metadata(url)
 
         if metadata:
-            # Merge metadata with existing result (metadata wins)
             enriched_result = {**result, **metadata}
+            if is_video:
+                enriched_result['title'] = _clean_video_title(
+                    enriched_result.get('title', '')
+                )
             enriched.append(enriched_result)
         else:
+            # Even on fetch failure for video URLs, clean the DDG title
+            if is_video:
+                result['title'] = _clean_video_title(result.get('title', ''))
             result['link_status'] = 'unknown'
             enriched.append(result)
 

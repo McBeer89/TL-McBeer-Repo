@@ -347,7 +347,7 @@ def format_date(date_str: Optional[str]) -> str:
     """Format a date string for display."""
     if not date_str:
         return "Unknown"
-    
+
     try:
         # Try to parse various date formats
         for fmt in ['%Y-%m-%d', '%m/%d/%Y', '%B %d, %Y', '%B %d %Y']:
@@ -359,3 +359,174 @@ def format_date(date_str: Optional[str]) -> str:
         return date_str[:10] if len(date_str) >= 10 else date_str
     except Exception:
         return "Unknown"
+
+
+# ---------------------------------------------------------------------------
+# Search result deduplication
+# ---------------------------------------------------------------------------
+
+# Preferred GitHub orgs — earlier entries have higher priority
+_PREFERRED_GITHUB_ORGS = ['redcanaryco', 'sigmahq', 'mitre-attack', 'mitre']
+
+
+def deduplicate_results(
+    results: Dict[str, List[Dict]],
+    verbose: bool = False,
+) -> Dict[str, List[Dict]]:
+    """
+    Remove duplicate search results across all categories.
+
+    Handles:
+      - GitHub forks: same file path in different repos
+      - Academic papers: same paper in PDF vs HTML format (arXiv, IEEE)
+      - Cross-platform title duplicates: very similar titles
+
+    Args:
+        results: Dict mapping category name to list of result dicts
+        verbose: Log removed duplicates
+
+    Returns:
+        Deduplicated results dict (same structure)
+    """
+    from difflib import SequenceMatcher
+
+    removed_urls: set = set()
+
+    # -- helpers ----------------------------------------------------------
+
+    def _github_file_key(url: str) -> Optional[str]:
+        """Extract the file path portion from a GitHub URL."""
+        m = re.search(r'github\.com/[^/]+/[^/]+/(?:blob|tree)/[^/]+/(.+)', url)
+        return m.group(1) if m else None
+
+    def _github_org(url: str) -> str:
+        m = re.search(r'github\.com/([^/]+)/', url)
+        return m.group(1).lower() if m else ''
+
+    def _github_org_priority(org: str) -> int:
+        try:
+            return _PREFERRED_GITHUB_ORGS.index(org)
+        except ValueError:
+            return len(_PREFERRED_GITHUB_ORGS)
+
+    def _arxiv_id(url: str) -> Optional[str]:
+        m = re.search(r'arxiv\.org/(?:abs|pdf|html)/(\d+\.\d+)', url)
+        return m.group(1) if m else None
+
+    def _ieee_id(url: str) -> Optional[str]:
+        m = re.search(
+            r'ieeexplore\.ieee\.org/(?:document|iel\d+/[^/]+/[^/]+)/(\d+)', url
+        )
+        return m.group(1) if m else None
+
+    def _normalize_title(title: str) -> str:
+        return re.sub(r'[^a-z0-9\s]', '', title.lower()).strip()
+
+    # -- flatten ----------------------------------------------------------
+
+    all_items = []
+    for category, cat_results in results.items():
+        for r in cat_results:
+            all_items.append((category, r))
+
+    # -- Pass 1: GitHub fork dedup ----------------------------------------
+
+    github_file_map: Dict[str, tuple] = {}  # file_path -> (category, result)
+
+    for category, r in all_items:
+        url = r.get('url', '')
+        fkey = _github_file_key(url)
+        if not fkey:
+            continue
+        if fkey in github_file_map:
+            existing_cat, existing_r = github_file_map[fkey]
+            existing_org = _github_org(existing_r.get('url', ''))
+            new_org = _github_org(url)
+            if _github_org_priority(new_org) < _github_org_priority(existing_org):
+                removed_urls.add(existing_r['url'])
+                github_file_map[fkey] = (category, r)
+                if verbose:
+                    print(f"  [dedup] Removed fork: {existing_r['url']} (kept {url})")
+            else:
+                removed_urls.add(url)
+                if verbose:
+                    print(f"  [dedup] Removed fork: {url} (kept {existing_r['url']})")
+        else:
+            github_file_map[fkey] = (category, r)
+
+    # -- Pass 2: Academic paper dedup (arXiv + IEEE) ----------------------
+
+    arxiv_map: Dict[str, tuple] = {}
+    ieee_map: Dict[str, tuple] = {}
+
+    for category, r in all_items:
+        url = r.get('url', '')
+        if url in removed_urls:
+            continue
+
+        aid = _arxiv_id(url)
+        if aid:
+            if aid in arxiv_map:
+                existing_cat, existing_r = arxiv_map[aid]
+                if r.get('relevance_score', 0) > existing_r.get('relevance_score', 0):
+                    removed_urls.add(existing_r['url'])
+                    arxiv_map[aid] = (category, r)
+                    if verbose:
+                        print(f"  [dedup] Removed arXiv duplicate: {existing_r['url']}")
+                else:
+                    removed_urls.add(url)
+                    if verbose:
+                        print(f"  [dedup] Removed arXiv duplicate: {url}")
+            else:
+                arxiv_map[aid] = (category, r)
+            continue
+
+        iid = _ieee_id(url)
+        if iid:
+            if iid in ieee_map:
+                existing_cat, existing_r = ieee_map[iid]
+                if r.get('relevance_score', 0) > existing_r.get('relevance_score', 0):
+                    removed_urls.add(existing_r['url'])
+                    ieee_map[iid] = (category, r)
+                    if verbose:
+                        print(f"  [dedup] Removed IEEE duplicate: {existing_r['url']}")
+                else:
+                    removed_urls.add(url)
+                    if verbose:
+                        print(f"  [dedup] Removed IEEE duplicate: {url}")
+            else:
+                ieee_map[iid] = (category, r)
+
+    # -- Pass 3: Cross-platform title dedup (>90% similarity) ------------
+
+    seen_titles: list = []  # list of (normalized_title, url, score)
+
+    for _category, r in all_items:
+        url = r.get('url', '')
+        if url in removed_urls:
+            continue
+        title = _normalize_title(r.get('title', ''))
+        if len(title) < 10:
+            continue
+        for existing_title, existing_url, existing_score in seen_titles:
+            ratio = SequenceMatcher(None, title, existing_title).ratio()
+            if ratio > 0.90:
+                if r.get('relevance_score', 0) > existing_score:
+                    removed_urls.add(existing_url)
+                else:
+                    removed_urls.add(url)
+                if verbose:
+                    print(f"  [dedup] Removed title duplicate: {url} (ratio={ratio:.2f})")
+                break
+        else:
+            seen_titles.append((title, url, r.get('relevance_score', 0)))
+
+    # -- Rebuild ----------------------------------------------------------
+
+    deduped: Dict[str, List[Dict]] = {}
+    for category, cat_results in results.items():
+        deduped[category] = [
+            r for r in cat_results if r.get('url', '') not in removed_urls
+        ]
+
+    return deduped
