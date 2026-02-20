@@ -1,1 +1,1 @@
-# Tired-Labs-McBeer-Repo
+# TL-McBeer-Repo
