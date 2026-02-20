@@ -37,8 +37,9 @@ env/
 .DS_Store
 Thumbs.db
 
-# Claude Code project settings (local, machine-specific)
+# AI assistant settings (local, machine-specific)
 .claude/
+.clinerules*
 
 # Tool backups
 *-backup-*/
