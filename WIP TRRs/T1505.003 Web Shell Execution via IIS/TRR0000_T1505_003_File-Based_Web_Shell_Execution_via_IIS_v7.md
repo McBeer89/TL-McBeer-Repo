@@ -177,10 +177,21 @@ ASP.NET files (`.aspx`) undergo a compilation step. On the first request to an
 assembly (DLL). This compiled assembly is stored in a temporary directory at
 `C:\Windows\Microsoft.NET\Framework64\<version>\Temporary ASP.NET Files\` and
 is then loaded into the `w3wp.exe` process for execution. Subsequent requests
-to the same file reuse the compiled assembly without recompilation. On older
-versions of ASP.NET, this compilation step may spawn `csc.exe` (the C# compiler)
-as a child process of `w3wp.exe`; on newer versions using the Roslyn compiler,
-the compilation may occur in-process.
+to the same file reuse the compiled assembly without recompilation. On the
+classic .NET Framework (including version 4.8, which remains widely deployed),
+this compilation step spawns `csc.exe` (the C# compiler) as a child process of
+`w3wp.exe`. On ASP.NET Core or environments using the Roslyn in-process
+compiler, the compilation may occur entirely within the `w3wp.exe` process.
+
+The compilation process produces several observable artifacts in the Temporary
+ASP.NET Files directory: a `.compiled` metadata file, the compiled assembly
+(`.dll`), intermediate C# source files (`.cs`), and compiler I/O files
+(`.cmdline`, `.out`, `.err`). Notably, the `.compiled` file's name preserves
+the original source file extension — for example, `shell.aspx.cdcab7d2.compiled`
+for an ASPX file, or `readme.txt.cdcab7d2.compiled` if a `.txt` file has been
+configured for ASP.NET execution via handler manipulation (see Procedure C).
+This naming convention has detection implications discussed in the Detection
+Considerations section.
 
 The creation of a compiled DLL in the Temporary ASP.NET Files directory is an
 observable artifact that can serve as an additional detection signal for ASPX
@@ -215,6 +226,29 @@ attacker can define an inline `IHttpHandler` within the `web.config` file
 itself, effectively turning the configuration file into the web shell. In this
 variant, no separate script file is needed at all — the `web.config` is the
 sole file the attacker must write.
+
+The custom handler mapping variant requires two configuration elements, not
+just the handler mapping itself. Adding a `<handlers>` entry in
+`<system.webServer>` routes the non-standard extension to the ASP.NET
+`PageHandlerFactory`, but ASP.NET's compilation system also needs a build
+provider registration to know how to compile the unfamiliar extension. Without
+a corresponding `<buildProviders>` entry in `<system.web><compilation>` that
+maps the extension to `System.Web.Compilation.PageBuildProvider`, ASP.NET will
+accept the routed request but fail with a compilation error. Both elements must
+be present in the `web.config` for the handler manipulation to succeed.
+
+This build provider registration has a scope constraint: the `<buildProviders>`
+element can only be defined at the IIS Application level, not in an arbitrary
+subdirectory's `web.config`. ASP.NET enforces this restriction and will return
+a configuration error if `<buildProviders>` appears below the application root.
+This means the custom handler mapping variant of Procedure C requires one of
+three conditions: the target directory is already configured as an IIS
+Application (common in real-world deployments where virtual directories are
+set up as applications), the attacker can modify the site root's `web.config`
+(which has broader impact and is more likely to be noticed), or the attacker
+can modify `machine.config` (which requires SYSTEM-level access and is
+unlikely). This constraint narrows the attack surface for this variant
+compared to the inline `IHttpHandler` variant, which has no such restriction.
 
 When a `web.config` file is placed in a subdirectory, IIS dynamically reloads
 that directory's configuration without requiring a server restart. This means
@@ -310,8 +344,10 @@ spawned process is the strongest detection opportunity in this procedure.
 The Compile ASPX sub-operation (shown as a lower abstraction layer of Execute
 Code) is relevant only when the web shell uses an `.aspx` extension and
 produces an observable artifact in the form of a compiled DLL in the Temporary
-ASP.NET Files directory. On older ASP.NET versions, the compilation may also
-produce a `csc.exe` child process.
+ASP.NET Files directory. On the .NET Framework (including version 4.8), the
+compilation spawns `csc.exe` as a child process of `w3wp.exe`, producing
+an additional process creation event. On ASP.NET Core with the Roslyn
+in-process compiler, the compilation may occur without a child process.
 
 ### Procedure B: Web Shell with In-Process Execution
 
@@ -390,12 +426,16 @@ operations.
 There are two primary variants of this approach. In the first variant, the
 attacker adds a custom handler mapping to the `web.config` that instructs IIS
 to process a normally static file extension (such as `.jpg`, `.txt`, or `.log`)
-through the ASP.NET engine. The attacker then places their web shell with that
+through the ASP.NET engine, along with a build provider registration that tells
+ASP.NET how to compile the unfamiliar extension (as described in the Technical
+Background section). The attacker then places their web shell with that
 innocuous extension in the same directory. Because the custom handler mapping
 overrides the default static file handler, IIS treats the file as executable
 code. This variant requires two files: the `web.config` and the web shell file
 itself. However, the web shell file will bypass any security controls that
-monitor only for traditional script extensions.
+monitor only for traditional script extensions. Note that the build provider
+registration must be defined at the IIS Application level (see Technical
+Background), which constrains where this variant can be deployed.
 
 In the second and more direct variant, the attacker defines an inline
 `IHttpHandler` directly within the `web.config` file. The handler's code is
@@ -445,6 +485,18 @@ handler mappings rather than the server defaults. The post-execution branch
 between process spawn and .NET API calls remains the same, as post-execution
 behavior depends on the web shell's code, not on how the handler was configured.
 
+A notable detection artifact specific to the custom handler mapping variant:
+when ASP.NET compiles a file with a non-standard extension, the resulting
+`.compiled` metadata file in the Temporary ASP.NET Files directory preserves
+the original source extension in its filename (for example,
+`readme.txt.cdcab7d2.compiled` or `status.info.cdcab7d2.compiled`). Because
+ASP.NET should never be compiling `.txt`, `.jpg`, `.info`, or other
+non-script extensions under normal operations, this artifact provides a very
+high-fidelity detection signal for handler manipulation. Each IIS Application
+also receives its own subdirectory within Temporary ASP.NET Files, so the
+appearance of a new subdirectory for an unexpected application path is an
+additional indicator.
+
 ## Detection Considerations
 
 The DDM for this technique does not have a single convergence point with strong
@@ -457,23 +509,43 @@ sources provide coverage for each procedure:
 
 ### Procedure Coverage Matrix
 
-|                  | Process Spawn (Sysmon 1 / Event 4688) | File Creation (Sysmon 11) | web.config Monitoring (Sysmon 11 / FIM) | ASPX Compilation Artifacts (Sysmon 11) | IIS W3C Logs |
-|------------------|:-----:|:-----:|:-----:|:-----:|:-----:|
-| **TRR0000.WIN.A** | ✅    | ⚠️*   | —     | ⚠️**  | ⚠️*** |
-| **TRR0000.WIN.B** | —     | ⚠️*   | —     | ⚠️**  | ⚠️*** |
-| **TRR0000.WIN.C** | ⚠️†   | ⚠️††  | ✅    | ⚠️**  | ⚠️*** |
+|                  | Process Spawn (Sysmon 1 / Event 4688) | File Creation (Sysmon 11) | web.config Monitoring (Sysmon 11 / FIM) | ASPX Compilation Artifacts (Sysmon 11) | Non-Standard Extension Compilation (Sysmon 11) | IIS W3C Logs |
+|------------------|:-----:|:-----:|:-----:|:-----:|:-----:|:-----:|
+| **TRR0000.WIN.A** | ✅    | ⚠️*   | —     | ⚠️**  | —     | ⚠️*** |
+| **TRR0000.WIN.B** | —     | ⚠️*   | —     | ⚠️**  | —     | ⚠️*** |
+| **TRR0000.WIN.C** | ⚠️†   | ⚠️††  | ✅    | ⚠️**  | ✅†††  | ⚠️*** |
 
 *\* New file creation only; Sysmon 11 does not fire on modification of existing files.*
 *\*\* `.aspx` files only; classic ASP (`.asp`) does not produce compilation artifacts.*
 *\*\*\* Full identification but weak classification; web shell requests are difficult to distinguish from legitimate traffic.*
 *† Only when the web shell spawns a child process.*
 *†† Custom handler mapping variant only; not the inline handler variant.*
+*††† Custom handler mapping variant only; `.compiled` files for non-standard extensions are never legitimate.*
 
 The strongest detection signal in the DDM is the parent-child process
 relationship between `w3wp.exe` and command interpreters or system utilities
 (Procedure A). This relationship is rarely legitimate and provides high-fidelity
 alerting. However, it provides no coverage for Procedure B (in-process
 execution), which by definition never spawns a child process.
+
+For Procedure C's custom handler mapping variant, the compilation of
+non-standard file extensions produces a uniquely high-fidelity detection
+signal. When ASP.NET compiles a file with an extension like `.txt`, `.jpg`,
+or `.info`, the resulting `.compiled` metadata file in the Temporary ASP.NET
+Files directory preserves the original extension in its filename. There is no
+legitimate reason for ASP.NET to compile files with these extensions, making a
+detection rule that alerts on `.compiled` files where the source extension is
+not a recognized script type (`.aspx`, `.ashx`, `.asmx`, `.cshtml`, `.vbhtml`)
+extremely reliable.
+
+An additional converging detection point is the `csc.exe` child process spawned
+by `w3wp.exe` during first-time ASP.NET compilation. On .NET Framework 4.8
+(which remains the default ASP.NET runtime on Windows Server), every new ASPX
+page compilation triggers a `csc.exe` spawn. In production environments where
+pages are pre-compiled during deployment, any `w3wp.exe` → `csc.exe` process
+creation indicates dynamic compilation of a page that was not part of the
+original deployment — a strong signal for web shell activity across all three
+procedures.
 
 ### Known Blind Spots
 
@@ -485,7 +557,12 @@ modification, not creation), no web.config is involved, and compilation artifact
 may not be distinguishing (recompilation of an existing page is not inherently
 suspicious). The primary residual detection options are File Integrity Monitoring,
 SACL auditing (Event 4663) on web root directories, and IIS log analysis — all
-of which require environment-specific configuration or manual review.
+of which require environment-specific configuration or manual review. Even SACL
+auditing has limitations: a web shell that performs only read operations (such as
+`Directory.GetDirectories()` or `File.ReadAllText()`) will not trigger SACL
+entries configured for write access, and configuring `ReadData` auditing on the
+web root would generate excessive noise from every legitimate page serving
+request.
 
 **Procedure C with Application Initialization** presents a partial blind spot
 for IIS log analysis. When the attacker configures Application Initialization to
@@ -493,6 +570,26 @@ auto-trigger the web shell on app pool recycle, the triggering request originate
 internally from IIS rather than from the attacker, and may be difficult to
 distinguish from legitimate warmup activity. However, web.config monitoring
 remains fully effective for this variant.
+
+### Additional Forensic Artifacts
+
+Two additional artifacts are worth noting for incident response, though they
+are less suitable for real-time alerting.
+
+**Background Activity Moderator (BAM) registry entries.** When `w3wp.exe`
+spawns a child process such as `cmd.exe`, Windows writes a BAM entry to
+`HKLM\System\CurrentControlSet\Services\bam\State\UserSettings\{SID}\` under
+the application pool's virtual account SID. BAM entries persist across reboots
+and can prove that a specific executable was run under the IIS app pool identity,
+even after event logs have been cleared or rolled over. This is a valuable
+forensic artifact for Procedure A investigations.
+
+**IIS log timing analysis.** The first request to a dynamically compiled page
+shows significantly higher response times than subsequent requests due to
+compilation overhead (often hundreds of milliseconds versus single-digit
+milliseconds). In historical log analysis, a first-seen URI with an anomalously
+high response time followed by subsequent fast requests to the same URI is
+consistent with a newly deployed web shell being accessed for the first time.
 
 ## Available Emulation Tests
 
