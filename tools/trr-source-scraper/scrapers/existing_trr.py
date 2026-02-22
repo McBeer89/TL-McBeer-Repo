@@ -427,13 +427,7 @@ def scan_for_existing_trrs(
         scanner = GitHubTRRScanner(github_repo, branch, reports_path, user_agent)
         trrs = scanner.find_related_trrs(technique_id, technique_name)
         # Derive TRR prefixes so DDM lookup is path-based (no extra network fetches)
-        matched_prefixes = {
-            t["file_path"].rsplit("/ddms/", 1)[0]  # won't split README paths; safe
-            if "/ddms/" in t["file_path"]
-            else "/".join(t["file_path"].split("/")[:3])  # reports/trr####/slug
-            for t in trrs
-        }
-        # Build prefixes from the README paths: reports/trr####/slug/README.md → reports/trr####/slug
+        # reports/trr####/slug/README.md → reports/trr####/slug
         matched_prefixes = {
             t["file_path"].rsplit("/README.md", 1)[0] for t in trrs
         }

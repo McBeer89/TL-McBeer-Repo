@@ -159,18 +159,19 @@ def compute_relevance_score(
     trusted_sources: dict = None,
 ) -> float:
     """
-    Score a search result 0.0-1.0 based on how likely it is to contain
-    substantive content about the given ATT&CK technique.
+    Score a search result 0.0-1.0.
 
-    Signals (max 1.0):
-      Title:          technique ID (+0.20), technique name (+0.15)
-      Description:    technique ID (+0.10), technique name (+0.05)
-      URL path:       technique ID (+0.05)
-      MITRE refs:     domain cited by MITRE (+0.10)
-      Trust tier:     high-priority domain (+0.10), medium-priority (+0.05)
-      Content depth:  Long-form (+0.10), Standard (+0.05)
-      Code blocks:    >=2 code blocks (+0.05)
-      Tech markers:   >=3 categories (+0.10), 1-2 categories (+0.05)
+    Base signals (from metadata — always available):
+      Title:       technique ID (+0.30), technique name (+0.25)
+      Description: technique ID (+0.15), technique name (+0.10)
+      URL path:    technique ID (+0.10)
+      MITRE refs:  domain cited by MITRE (+0.10)
+      Trust tier:  high-priority domain (+0.15), medium (+0.05)
+
+    Bonus signals (from content analysis — only after enrichment):
+      Depth:       Long-form (+0.10), Standard (+0.05)
+      Code:        >=2 blocks (+0.05)
+      Markers:     >=3 categories (+0.10), 1-2 (+0.05)
     """
     score = 0.0
     short_name = (
@@ -185,39 +186,46 @@ def compute_relevance_score(
     url = (result.get('url') or '').lower()
     domain = (result.get('domain') or '').lower()
 
-    # Title signals
+    # --- Base signals (original weights, unchanged) ---
+
     if tid_lower in title:
-        score += 0.20
+        score += 0.30
     if short_name and short_name in title:
-        score += 0.15
+        score += 0.25
 
-    # Description / snippet signals
     if tid_lower in desc:
-        score += 0.10
+        score += 0.15
     if short_name and short_name in desc:
-        score += 0.05
+        score += 0.10
 
-    # URL path contains technique ID
     tid_in_path = tid_lower.replace('.', '/') if '.' in tid_lower else tid_lower
     if tid_in_path in url or tid_lower in url:
-        score += 0.05
-
-    # Domain appears in MITRE's own references
-    if mitre_ref_domains and domain in mitre_ref_domains:
         score += 0.10
 
-    # Domain trust tier
+    # Domain appears in MITRE's own references (strip www. for matching)
+    if mitre_ref_domains and domain:
+        bare = domain.removeprefix('www.')
+        if bare in mitre_ref_domains or domain in mitre_ref_domains:
+            score += 0.10
+
+    # Domain trust tier — fix www. prefix mismatch
     if trusted_sources and domain:
+        bare_domain = domain.removeprefix('www.')
+        matched = False
         for cat_config in trusted_sources.values():
-            if domain in cat_config.get('domains', []):
-                priority = cat_config.get('priority', '')
-                if priority == 'high':
-                    score += 0.10
-                elif priority == 'medium':
-                    score += 0.05
+            for trusted_domain in cat_config.get('domains', []):
+                if bare_domain == trusted_domain or bare_domain.endswith('.' + trusted_domain):
+                    priority = cat_config.get('priority', '')
+                    if priority == 'high':
+                        score += 0.15
+                    elif priority == 'medium':
+                        score += 0.05
+                    matched = True
+                    break
+            if matched:
                 break
 
-    # --- Content analysis signals (only present after enrichment) ---
+    # --- Bonus signals (from content analysis, only after enrichment) ---
 
     depth = result.get('depth', '')
     if depth == 'Long-form':

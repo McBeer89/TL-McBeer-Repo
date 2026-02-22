@@ -627,12 +627,14 @@ def _normalize_search_result(result: Dict) -> Dict:
         "relevance_score": result.get("relevance_score", 0.0),
         "link_status": result.get("link_status"),
         "source_type": _classify_source_type(result),
+        "enrichment_status": result.get("_enrichment_status", ""),
         # Content analysis fields (empty defaults when not enriched)
         "word_count": result.get("word_count", 0),
         "depth": result.get("depth", ""),
         "code_blocks": result.get("code_blocks", 0),
         "technical_markers": result.get("technical_markers", {}),
         "content_focus": result.get("content_focus", []),
+        "marker_summary": result.get("marker_summary", ""),
     }
 
 
@@ -743,9 +745,9 @@ def _render_search_result(
 
     # Relevance score
     score = result.get('relevance_score', 0)
-    if score >= 0.70:
+    if score >= 0.60:
         relevance_label = "Strong Match"
-    elif score >= 0.45:
+    elif score >= 0.40:
         relevance_label = "Likely Relevant"
     elif score >= 0.25:
         relevance_label = "Possible Match"
@@ -1181,13 +1183,13 @@ def main():
             1 for cat_results in search_results.values()
             for r in cat_results if r.get('_enrichment_status') == 'enriched'
         )
-        skipped_count = sum(
+        analyzed_count = sum(
             1 for cat_results in search_results.values()
-            for r in cat_results if r.get('_enrichment_status') == 'skipped'
+            for r in cat_results if r.get('word_count', 0) > 0
         )
         print_progress(
-            f"         Enriched {enriched_count} of {total_results} results "
-            f"({skipped_count} already had good metadata)",
+            f"         Metadata enriched: {enriched_count} · "
+            f"Content analyzed: {analyzed_count} of {total_results}",
             always=True, quiet=quiet,
         )
     elif args.validate_links and not args.no_ddg and total_results > 0:
@@ -1329,7 +1331,7 @@ def main():
     print("")
     print("=" * 55)
     print(f"Report saved to: {output_file}")
-    print(f"Sources found:  {total_results}")
+    print(f"Sources found:  {sum(len(r) for r in search_results.values())}")
     print(f"ART tests:      {len(atomic_tests)}")
     print("")
     if not quiet:

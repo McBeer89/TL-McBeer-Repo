@@ -218,17 +218,12 @@ def _needs_enrichment(result: Dict) -> bool:
 
 def enrich_search_results(results: List[Dict], user_agent: str = "") -> List[Dict]:
     """
-    Enrich search results with page metadata.
+    Enrich search results with page metadata and content analysis.
 
-    Uses heuristics to skip results that already have good metadata,
-    reducing unnecessary HTTP requests and improving runtime.
-
-    Args:
-        results: List of search result dictionaries
-        user_agent: Custom user agent string
-
-    Returns:
-        Enriched list of results with '_enrichment_status' diagnostic field
+    Every HTML result gets an HTTP GET for content analysis (word count,
+    technical markers, focus tags). Metadata fields (title, description,
+    date) are only overwritten when _needs_enrichment() says the existing
+    metadata is inadequate.
     """
     fetcher = SiteFetcher(user_agent=user_agent)
     enriched = []
@@ -236,32 +231,69 @@ def enrich_search_results(results: List[Dict], user_agent: str = "") -> List[Dic
     for result in results:
         url = result.get('url', '')
         if not url:
-            continue
-
-        if not _needs_enrichment(result):
-            result.setdefault('link_status', 'ok')
-            result['_enrichment_status'] = 'skipped'
             enriched.append(result)
             continue
 
-        is_video = _is_video_platform_url(url)
-        metadata = fetcher.fetch_page_metadata(url)
+        # Skip PDFs — can't parse HTML content
+        if url.lower().endswith('.pdf') or '/pdf/' in url.lower():
+            result.setdefault('link_status', 'ok')
+            result['_enrichment_status'] = 'skipped_pdf'
+            enriched.append(result)
+            continue
 
-        if metadata:
-            enriched_result = {**result, **metadata}
-            if is_video:
-                enriched_result['title'] = _clean_video_title(
-                    enriched_result.get('title', '')
-                )
-            enriched_result['_enrichment_status'] = 'enriched'
-            enriched.append(enriched_result)
-        else:
-            # Even on fetch failure for video URLs, clean the DDG title
-            if is_video:
-                result['title'] = _clean_video_title(result.get('title', ''))
-            result['link_status'] = 'unknown'
+        needs_meta = _needs_enrichment(result)
+        is_video = _is_video_platform_url(url)
+
+        # ALWAYS fetch the page (for content analysis)
+        fetcher.rate_limiter.wait()
+        try:
+            response = fetcher.session.get(url, timeout=15)
+            response.raise_for_status()
+        except Exception:
+            result['link_status'] = 'dead'
             result['_enrichment_status'] = 'failed'
             enriched.append(result)
+            continue
+
+        content_type = response.headers.get('Content-Type', '')
+        result['link_status'] = 'ok'
+
+        if 'text/html' not in content_type:
+            result['_enrichment_status'] = 'skipped_nonhtml'
+            enriched.append(result)
+            continue
+
+        soup = BeautifulSoup(response.text, 'lxml')
+
+        # Metadata: only overwrite if DDG metadata was bad
+        if needs_meta:
+            result['title'] = extract_title(soup)
+            result['description'] = clean_text(
+                extract_meta_description(soup), max_length=300
+            )
+            result['date'] = extract_date(soup)
+            result['_enrichment_status'] = 'enriched'
+        else:
+            result['_enrichment_status'] = 'analyzed'
+
+        # Video title cleanup (always, if applicable)
+        if is_video:
+            result['title'] = _clean_video_title(result.get('title', ''))
+
+        # Content analysis: ALWAYS runs on HTML pages
+        try:
+            analysis = analyze_page_content(soup)
+            result['word_count'] = analysis['word_count']
+            result['depth'] = analysis['depth']
+            result['code_blocks'] = analysis['code_blocks']
+            result['technical_markers'] = analysis['technical_markers']
+            result['content_focus'] = analysis['content_focus']
+            result['marker_summary'] = analysis['marker_summary']
+        except Exception:
+            # Analysis failure is non-fatal — result still usable
+            pass
+
+        enriched.append(result)
 
     return enriched
 
