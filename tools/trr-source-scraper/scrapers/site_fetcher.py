@@ -16,6 +16,7 @@ from utils import (
     extract_title,
     extract_date,
 )
+from utils.content_analysis import analyze_page_content
 
 
 class SiteFetcher:
@@ -79,7 +80,7 @@ class SiteFetcher:
 
         soup = BeautifulSoup(response.text, 'lxml')
 
-        return {
+        metadata = {
             'url': url,
             'domain': extract_domain(url),
             'title': extract_title(soup),
@@ -88,6 +89,29 @@ class SiteFetcher:
             'content_type': content_type,
             'link_status': 'ok',
         }
+
+        # Content analysis — best-effort, don't fail the whole enrichment
+        try:
+            analysis = analyze_page_content(soup)
+            metadata.update({
+                'word_count': analysis['word_count'],
+                'depth': analysis['depth'],
+                'code_blocks': analysis['code_blocks'],
+                'technical_markers': analysis['technical_markers'],
+                'content_focus': analysis['content_focus'],
+                'marker_summary': analysis['marker_summary'],
+            })
+        except Exception:
+            metadata.update({
+                'word_count': 0,
+                'depth': 'Unknown',
+                'code_blocks': 0,
+                'technical_markers': {},
+                'content_focus': [],
+                'marker_summary': '',
+            })
+
+        return metadata
     
     def fetch_multiple(self, urls: List[str]) -> List[Dict]:
         """

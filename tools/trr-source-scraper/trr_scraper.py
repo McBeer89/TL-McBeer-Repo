@@ -53,11 +53,10 @@ from utils import (
     get_category_for_domain,
 )
 
-# v1.4: Normalized JSON output — all fields guaranteed present with
-#        consistent types (strings default to "", lists to [], numbers to 0).
-#        technique_info is never null. Search results always have domain,
-#        relevance_score, and source_type fields.
-REPORT_VERSION = "1.4"
+# v1.5: Content analysis for enriched search results — word count, depth,
+#        code blocks, technical markers, content focus tags. Relevance scoring
+#        moved to run after enrichment so body-content signals are available.
+REPORT_VERSION = "1.5"
 
 DEFAULT_TECHNIQUE_INFO = {
     "id": "",
@@ -628,6 +627,12 @@ def _normalize_search_result(result: Dict) -> Dict:
         "relevance_score": result.get("relevance_score", 0.0),
         "link_status": result.get("link_status"),
         "source_type": _classify_source_type(result),
+        # Content analysis fields (empty defaults when not enriched)
+        "word_count": result.get("word_count", 0),
+        "depth": result.get("depth", ""),
+        "code_blocks": result.get("code_blocks", 0),
+        "technical_markers": result.get("technical_markers", {}),
+        "content_focus": result.get("content_focus", []),
     }
 
 
@@ -688,32 +693,61 @@ def _render_search_result(
     link_dead = result.get('link_status') == 'dead'
     dead_tag = " (link may be broken)" if link_dead else ""
 
-    # Source type tag (Improvement 6)
-    source_tag = _classify_source_type(result)
-    tag_str = f" `{source_tag}`" if source_tag else ""
+    # Content focus tags (from body analysis, falling back to URL-based)
+    content_focus = result.get('content_focus', [])
+    if not content_focus:
+        source_tag = _classify_source_type(result)
+        content_focus = [source_tag] if source_tag else []
 
+    tag_str = ''.join(f' `{t}`' for t in content_focus) if content_focus else ""
+
+    # Title line
     lines.append(f"### {index}. [{title}]({url}){dead_tag}{tag_str}")
     lines.append("")
 
     if extra_note:
         lines.append(f"> {extra_note}")
-    if domain:
-        lines.append(f"> **Source:** {domain}")
-    if date:
-        lines.append(f"> **Published:** {format_date(date)}")
-    lines.append("")
 
+    # Metadata line: source | date | depth | code
+    meta_parts = []
+    if domain:
+        meta_parts.append(domain)
+    if date:
+        meta_parts.append(format_date(date))
+
+    depth = result.get('depth')
+    word_count = result.get('word_count', 0)
+    if depth and depth != 'Unknown':
+        meta_parts.append(f"~{word_count:,} words ({depth})")
+
+    code_blocks = result.get('code_blocks', 0)
+    if code_blocks > 0:
+        label = "code sample" if code_blocks == 1 else "code samples"
+        meta_parts.append(f"{code_blocks} {label}")
+
+    if meta_parts:
+        lines.append(f"> {' \u00b7 '.join(meta_parts)}")
+        lines.append("")
+
+    # Technical markers (compact one-liner if present)
+    marker_summary = result.get('marker_summary', '')
+    if marker_summary:
+        lines.append(f"**Markers:** {marker_summary}")
+        lines.append("")
+
+    # Excerpt
     if description:
         excerpt_len = config.output_settings.get('excerpt_length', 200)
         lines.append(f"**Excerpt:** {clean_text(description, excerpt_len)}")
         lines.append("")
 
+    # Relevance score
     score = result.get('relevance_score', 0)
-    if score >= 0.50:
+    if score >= 0.70:
         relevance_label = "Strong Match"
-    elif score >= 0.25:
+    elif score >= 0.45:
         relevance_label = "Likely Relevant"
-    elif score >= 0.10:
+    elif score >= 0.25:
         relevance_label = "Possible Match"
     else:
         relevance_label = "Weak Match"
@@ -1051,7 +1085,7 @@ def main():
     user_agent = config.search_settings.get('user_agent', 'TRR-Source-Scraper/1.0')
 
     # Step 1: Fetch MITRE ATT&CK information
-    print_progress("Step 1/5 — Fetching MITRE ATT&CK data...", always=True, quiet=quiet)
+    print_progress("Step 1/6 — Fetching MITRE ATT&CK data...", always=True, quiet=quiet)
     technique_info = fetch_mitre_technique(technique_id, user_agent)
 
     if technique_info:
@@ -1077,9 +1111,9 @@ def main():
     reports_path = trr_cfg.get("reports_path", "reports")
 
     if github_repo:
-        print_progress(f"Step 2/5 — Checking {github_repo} for existing TRRs and DDMs...", always=True, quiet=quiet)
+        print_progress(f"Step 2/6 — Checking {github_repo} for existing TRRs and DDMs...", always=True, quiet=quiet)
     else:
-        print_progress("Step 2/5 — No TRR repository configured — skipping", always=True, quiet=quiet)
+        print_progress("Step 2/6 — No TRR repository configured — skipping", always=True, quiet=quiet)
 
     existing_trrs, existing_ddms = scan_for_existing_trrs(
         technique_id,
@@ -1098,7 +1132,7 @@ def main():
         print_progress("         No existing TRRs or DDMs found — this is a new technique to research", always=True, quiet=quiet)
 
     # Step 3: Fetch Atomic Red Team tests
-    print_progress("Step 3/5 — Fetching Atomic Red Team emulation tests...", always=True, quiet=quiet)
+    print_progress("Step 3/6 — Fetching Atomic Red Team emulation tests...", always=True, quiet=quiet)
     atomic_tests = fetch_atomic_tests(technique_id, user_agent)
 
     if atomic_tests:
@@ -1111,10 +1145,10 @@ def main():
 
     # Step 4: Search for sources (skippable with --no-ddg)
     if args.no_ddg:
-        print_progress("Step 4/5 — Skipping DuckDuckGo search (--no-ddg)", always=True, quiet=quiet)
+        print_progress("Step 4/6 — Skipping DuckDuckGo search (--no-ddg)", always=True, quiet=quiet)
         search_results: Dict[str, List[Dict]] = {}
     else:
-        print_progress("Step 4/5 — Searching for research sources...", always=True, quiet=quiet)
+        print_progress("Step 4/6 — Searching for research sources...", always=True, quiet=quiet)
         t1_count = len(config.tier1_domains)
         print_progress(f"         Running {t1_count} focused queries for high-value sources...", always=True, quiet=quiet)
         print_progress(f"         Plus sweep queries across {len(config.trusted_sources)} categories...", always=True, quiet=quiet)
@@ -1138,7 +1172,7 @@ def main():
     # Step 5: Enrich results with metadata (optional)
     total_results = sum(len(r) for r in search_results.values())
     if not args.no_enrich and not args.no_ddg and total_results > 0:
-        print_progress("Step 5/5 — Enriching results with page metadata...", always=True, quiet=quiet)
+        print_progress("Step 5/6 — Enriching results with page metadata...", always=True, quiet=quiet)
         for category, results in search_results.items():
             if results:
                 search_results[category] = enrich_search_results(results, user_agent)
@@ -1157,15 +1191,16 @@ def main():
             always=True, quiet=quiet,
         )
     elif args.validate_links and not args.no_ddg and total_results > 0:
-        print_progress("Step 5/5 — Validating links (HEAD requests only)...", always=True, quiet=quiet)
+        print_progress("Step 5/6 — Validating links (HEAD requests only)...", always=True, quiet=quiet)
         for category, results in search_results.items():
             if results:
                 search_results[category] = validate_search_result_links(results, user_agent)
     else:
         reason = "--no-ddg" if args.no_ddg else "--no-enrich" if args.no_enrich else "no results"
-        print_progress(f"Step 5/5 — Skipping metadata enrichment ({reason})", always=True, quiet=quiet)
+        print_progress(f"Step 5/6 — Skipping metadata enrichment ({reason})", always=True, quiet=quiet)
 
-    # Score, sort, and filter results by relevance
+    # Step 6: Score, sort, and filter results by relevance
+    # (Runs AFTER enrichment so body-content signals are available)
     filtered_count = 0
     min_score = (
         args.min_score
@@ -1173,6 +1208,7 @@ def main():
         else config.search_settings.get('min_relevance_score', 0.25)
     )
     if search_results:
+        print_progress("Step 6/6 — Scoring and filtering results by relevance...", always=True, quiet=quiet)
         mitre_ref_domains = set()
         if technique_info:
             for ref in technique_info.get('references', []):
@@ -1200,12 +1236,11 @@ def main():
 
         filtered_total = sum(len(r) for r in search_results.values())
         filtered_count = pre_filter_total - filtered_total
-        if not quiet:
-            print_progress(
-                f"         {filtered_total} sources passed relevance filtering "
-                f"(min score: {min_score:.0%}, {filtered_count} excluded)",
-                always=True, quiet=quiet,
-            )
+        print_progress(
+            f"         {filtered_total} sources passed relevance filtering "
+            f"(min score: {min_score:.0%}, {filtered_count} excluded)",
+            always=True, quiet=quiet,
+        )
 
     # Deduplicate across categories (GitHub forks, academic paper formats, etc.)
     if search_results:

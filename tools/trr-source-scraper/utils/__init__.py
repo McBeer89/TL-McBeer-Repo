@@ -21,6 +21,7 @@ from utils.helpers import (
     deduplicate_results,
 )
 from utils.cache import get_cached, set_cached
+from utils.content_analysis import analyze_page_content
 
 __all__ = [
     'RateLimiter',
@@ -41,4 +42,5 @@ __all__ = [
     'deduplicate_results',
     'get_cached',
     'set_cached',
+    'analyze_page_content',
 ]

@@ -159,15 +159,18 @@ def compute_relevance_score(
     trusted_sources: dict = None,
 ) -> float:
     """
-    Score a search result 0.0–1.0 based on how likely it is to contain
+    Score a search result 0.0-1.0 based on how likely it is to contain
     substantive content about the given ATT&CK technique.
 
-    Signals:
-      Title:       technique ID (+0.30), technique name (+0.25)
-      Description: technique ID (+0.15), technique name (+0.10)
-      URL path:    technique ID (+0.10)
-      MITRE refs:  domain cited by MITRE (+0.10)
-      Trust tier:  high-priority domain (+0.15), medium-priority (+0.05)
+    Signals (max 1.0):
+      Title:          technique ID (+0.20), technique name (+0.15)
+      Description:    technique ID (+0.10), technique name (+0.05)
+      URL path:       technique ID (+0.05)
+      MITRE refs:     domain cited by MITRE (+0.10)
+      Trust tier:     high-priority domain (+0.10), medium-priority (+0.05)
+      Content depth:  Long-form (+0.10), Standard (+0.05)
+      Code blocks:    >=2 code blocks (+0.05)
+      Tech markers:   >=3 categories (+0.10), 1-2 categories (+0.05)
     """
     score = 0.0
     short_name = (
@@ -182,37 +185,56 @@ def compute_relevance_score(
     url = (result.get('url') or '').lower()
     domain = (result.get('domain') or '').lower()
 
-    # Title signals (strongest indicator)
+    # Title signals
     if tid_lower in title:
-        score += 0.30
+        score += 0.20
     if short_name and short_name in title:
-        score += 0.25
+        score += 0.15
 
     # Description / snippet signals
     if tid_lower in desc:
-        score += 0.15
+        score += 0.10
     if short_name and short_name in desc:
-        score += 0.10
+        score += 0.05
 
-    # URL path contains technique ID (e.g., /T1003/006)
+    # URL path contains technique ID
     tid_in_path = tid_lower.replace('.', '/') if '.' in tid_lower else tid_lower
-    if tid_lower in url or tid_in_path in url:
-        score += 0.10
+    if tid_in_path in url or tid_lower in url:
+        score += 0.05
 
-    # Domain appears in MITRE's own references (strong trust signal)
+    # Domain appears in MITRE's own references
     if mitre_ref_domains and domain in mitre_ref_domains:
         score += 0.10
 
-    # Domain trust tier from sources.json (high-priority vendors are inherently relevant)
+    # Domain trust tier
     if trusted_sources and domain:
         for cat_config in trusted_sources.values():
             if domain in cat_config.get('domains', []):
                 priority = cat_config.get('priority', '')
                 if priority == 'high':
-                    score += 0.15
+                    score += 0.10
                 elif priority == 'medium':
                     score += 0.05
                 break
+
+    # --- Content analysis signals (only present after enrichment) ---
+
+    depth = result.get('depth', '')
+    if depth == 'Long-form':
+        score += 0.10
+    elif depth == 'Standard':
+        score += 0.05
+
+    code_blocks = result.get('code_blocks', 0)
+    if code_blocks >= 2:
+        score += 0.05
+
+    markers = result.get('technical_markers', {})
+    populated_categories = sum(1 for v in markers.values() if v)
+    if populated_categories >= 3:
+        score += 0.10
+    elif populated_categories >= 1:
+        score += 0.05
 
     return min(score, 1.0)
 
