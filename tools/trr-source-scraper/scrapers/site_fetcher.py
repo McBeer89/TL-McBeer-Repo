@@ -2,6 +2,7 @@
 Site metadata fetcher for extracting details from URLs.
 """
 
+import re as _re
 from typing import Dict, Optional, List
 from bs4 import BeautifulSoup
 import requests
@@ -16,7 +17,7 @@ from utils import (
     extract_title,
     extract_date,
 )
-from utils.content_analysis import analyze_page_content
+from utils.content_analysis import analyze_page_content, analyze_raw_text
 
 
 class SiteFetcher:
@@ -172,6 +173,40 @@ def _clean_video_title(title: str) -> str:
     return title[:117].rsplit(' ', 1)[0] + '...'
 
 
+def _github_raw_url(url: str) -> str | None:
+    """
+    Convert a GitHub blob URL to a raw.githubusercontent.com URL.
+
+    Only converts blob URLs (individual files). Returns None for:
+    - tree URLs (directories)
+    - non-GitHub URLs
+    - GitHub URLs that aren't blob paths (issues, PRs, wiki, etc.)
+
+    Examples:
+        github.com/SigmaHQ/sigma/blob/master/rules/win/foo.yml
+        → raw.githubusercontent.com/SigmaHQ/sigma/master/rules/win/foo.yml
+    """
+    m = _re.match(
+        r'https?://github\.com/([^/]+/[^/]+)/blob/(.+)',
+        url,
+        _re.IGNORECASE,
+    )
+    if not m:
+        return None
+    repo = m.group(1)    # e.g. "SigmaHQ/sigma"
+    rest = m.group(2)    # e.g. "master/rules/windows/..."
+    return f"https://raw.githubusercontent.com/{repo}/{rest}"
+
+
+def _github_file_extension(url: str) -> str:
+    """Extract file extension from a GitHub blob URL."""
+    # Strip query string and fragment
+    clean = url.split('?')[0].split('#')[0]
+    if '.' in clean.split('/')[-1]:
+        return '.' + clean.split('/')[-1].rsplit('.', 1)[1].lower()
+    return ''
+
+
 def _needs_enrichment(result: Dict) -> bool:
     """
     Determine whether a search result needs metadata enrichment.
@@ -240,6 +275,45 @@ def enrich_search_results(results: List[Dict], user_agent: str = "") -> List[Dic
             result['_enrichment_status'] = 'skipped_pdf'
             enriched.append(result)
             continue
+
+        # GitHub blob URLs: fetch raw content instead of JS-rendered HTML
+        raw_url = _github_raw_url(url)
+        if raw_url:
+            needs_meta = _needs_enrichment(result)
+            fetcher.rate_limiter.wait()
+            try:
+                response = fetcher.session.get(raw_url, timeout=15)
+                response.raise_for_status()
+                raw_text = response.text
+                ext = _github_file_extension(url)
+
+                result['link_status'] = 'ok'
+
+                # Metadata enrichment (only if needed)
+                if needs_meta:
+                    # For GitHub files, use filename as title fallback
+                    filename = url.split('/')[-1]
+                    if not result.get('title') or result['title'] == 'Untitled':
+                        result['title'] = filename
+                    result['_enrichment_status'] = 'enriched_raw'
+                else:
+                    result['_enrichment_status'] = 'analyzed_raw'
+
+                # Content analysis on raw text
+                analysis = analyze_raw_text(raw_text, file_extension=ext)
+                result['word_count'] = analysis['word_count']
+                result['depth'] = analysis['depth']
+                result['code_blocks'] = analysis['code_blocks']
+                result['technical_markers'] = analysis['technical_markers']
+                result['content_focus'] = analysis['content_focus']
+                result['marker_summary'] = analysis['marker_summary']
+
+            except Exception:
+                result['link_status'] = 'dead'
+                result['_enrichment_status'] = 'failed'
+
+            enriched.append(result)
+            continue  # skip normal HTML fetch path
 
         needs_meta = _needs_enrichment(result)
         is_video = _is_video_platform_url(url)

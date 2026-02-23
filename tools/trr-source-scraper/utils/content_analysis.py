@@ -250,6 +250,20 @@ def _classify_content_focus(
     return tags
 
 
+def _build_marker_summary(markers: Dict[str, List[str]]) -> str:
+    """Build a compact summary string from technical markers for the report."""
+    summary_parts = []
+    for cat in ['event_ids', 'processes', 'registry', 'apis', 'network',
+                'file_paths', 'detection_syntax']:
+        items = markers.get(cat, [])
+        if items:
+            display = items[:5]
+            if len(items) > 5:
+                display.append(f"+{len(items) - 5} more")
+            summary_parts.append(f"{cat}: {', '.join(display)}")
+    return '; '.join(summary_parts) if summary_parts else ''
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -276,24 +290,72 @@ def analyze_page_content(soup: BeautifulSoup) -> Dict:
     markers = _extract_technical_markers(text)
     focus = _classify_content_focus(markers, code_blocks, text)
 
-    # Build a compact summary string for the report
-    summary_parts = []
-    for cat in ['event_ids', 'processes', 'registry', 'apis', 'network',
-                'file_paths', 'detection_syntax']:
-        items = markers.get(cat, [])
-        if items:
-            display = items[:5]
-            if len(items) > 5:
-                display.append(f"+{len(items) - 5} more")
-            summary_parts.append(f"{cat}: {', '.join(display)}")
-
-    marker_summary = '; '.join(summary_parts) if summary_parts else ''
-
     return {
         'word_count': word_count,
         'depth': _depth_label(word_count),
         'code_blocks': code_blocks,
         'technical_markers': markers,
         'content_focus': focus,
-        'marker_summary': marker_summary,
+        'marker_summary': _build_marker_summary(markers),
+    }
+
+
+def analyze_raw_text(text: str, file_extension: str = "") -> Dict:
+    """
+    Analyze raw text content (non-HTML) for technical markers.
+
+    Used for GitHub raw file content (YAML, markdown, XML, etc.)
+    where we have the file text but no HTML structure.
+
+    Args:
+        text: Raw file content as string
+        file_extension: File extension (e.g., '.yml', '.md', '.xml')
+            Used to determine code block counting strategy.
+
+    Returns:
+        Same dict structure as analyze_page_content():
+        {word_count, depth, code_blocks, technical_markers,
+         content_focus, marker_summary}
+    """
+    if not text:
+        return {
+            'word_count': 0,
+            'depth': 'Minimal',
+            'code_blocks': 0,
+            'technical_markers': {},
+            'content_focus': [],
+            'marker_summary': '',
+        }
+
+    # Cap input size (same as HTML path)
+    if len(text) > 50000:
+        text = text[:50000]
+
+    word_count = len(text.split())
+    depth = _depth_label(word_count)
+
+    # Code block counting depends on file type
+    ext = file_extension.lower()
+    if ext in ('.yml', '.yaml', '.xml', '.toml', '.json', '.conf'):
+        # The entire file IS structured config/code — count as 1 block
+        code_blocks = 1
+    elif ext in ('.md', '.markdown'):
+        # Count fenced code blocks in markdown
+        code_blocks = len(re.findall(r'^```', text, re.MULTILINE)) // 2
+    else:
+        code_blocks = 0
+
+    # Technical markers — reuse the same extraction on raw text
+    technical_markers = _extract_technical_markers(text)
+
+    # Content focus classification — reuse same logic
+    content_focus = _classify_content_focus(technical_markers, code_blocks, text)
+
+    return {
+        'word_count': word_count,
+        'depth': depth,
+        'code_blocks': code_blocks,
+        'technical_markers': technical_markers,
+        'content_focus': content_focus,
+        'marker_summary': _build_marker_summary(technical_markers),
     }
