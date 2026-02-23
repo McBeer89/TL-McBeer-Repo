@@ -13,5 +13,9 @@ pyyaml>=6.0
 # DuckDuckGo search (replaces fragile HTML scraping)
 ddgs>=9.0
 
-# Optional: JS-rendered site support (Playwright)
-# pip install playwright && playwright install chromium
+# Optional: JS-rendered page fetching (CrowdStrike, Elastic, Red Canary, etc.)
+# Requires separate browser install after pip install:
+#   pip install playwright
+#   playwright install chromium
+# The scraper works without Playwright — JS-heavy sites will show ⚠ empty
+# in the checklist, prompting manual review.
