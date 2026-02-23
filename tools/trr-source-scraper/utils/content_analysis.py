@@ -90,14 +90,17 @@ def _extract_article_text(soup: BeautifulSoup, max_chars: int = 50000) -> str:
         tag.decompose()
 
     # Remove by common class/id patterns (two-pass to avoid BS4 decompose()
-    # poisoning descendants still in the find_all list)
+    # poisoning descendants still in the find_all list).
+    # Only target block-level elements — some sites put layout classes on
+    # <html> or <body> which would destroy the entire tree.
     noise_patterns = [
         'sidebar', 'nav', 'menu', 'footer', 'header', 'comment',
         'advertisement', 'ad-', 'social', 'share', 'related',
         'breadcrumb', 'pagination', 'cookie', 'banner',
     ]
+    _block_tags = ['div', 'section', 'aside', 'ul', 'ol', 'span', 'p']
     to_remove = []
-    for element in soup.find_all(True):
+    for element in soup.find_all(_block_tags):
         classes = ' '.join(element.get('class', []))
         elem_id = element.get('id', '')
         combined = f"{classes} {elem_id}".lower()
@@ -106,8 +109,9 @@ def _extract_article_text(soup: BeautifulSoup, max_chars: int = 50000) -> str:
     for element in to_remove:
         element.decompose()
 
-    # Try to find the main content container
+    # Try to find the main content container (most specific first)
     main = (
+        soup.find('div', class_=re.compile(r'entry-content', re.I)) or
         soup.find('main') or
         soup.find('article') or
         soup.find('div', class_=re.compile(r'(content|post|entry|article)', re.I)) or
@@ -117,6 +121,14 @@ def _extract_article_text(soup: BeautifulSoup, max_chars: int = 50000) -> str:
     )
 
     text = main.get_text(separator=' ', strip=True)
+
+    # Fallback: if targeted extraction got very little text but the page
+    # clearly has content, use the broader body text instead.
+    if len(text.split()) < 50 and soup.body:
+        body_text = soup.body.get_text(separator=' ', strip=True)
+        if len(body_text.split()) > len(text.split()):
+            text = body_text
+
     return text[:max_chars]
 
 
