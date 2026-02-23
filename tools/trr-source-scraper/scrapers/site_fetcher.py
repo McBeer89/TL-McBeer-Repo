@@ -251,7 +251,13 @@ def _needs_enrichment(result: Dict) -> bool:
     return True
 
 
-def enrich_search_results(results: List[Dict], user_agent: str = "") -> List[Dict]:
+def enrich_search_results(
+    results: List[Dict],
+    user_agent: str = "",
+    js_rendered_domains: Optional[List[str]] = None,
+    verbose: bool = False,
+    pw_fetcher: Optional[object] = None,
+) -> List[Dict]:
     """
     Enrich search results with page metadata and content analysis.
 
@@ -259,9 +265,22 @@ def enrich_search_results(results: List[Dict], user_agent: str = "") -> List[Dic
     technical markers, focus tags). Metadata fields (title, description,
     date) are only overwritten when _needs_enrichment() says the existing
     metadata is inadequate.
+
+    Args:
+        pw_fetcher: Optional shared PlaywrightFetcher instance. When
+            provided, the caller owns the lifecycle (close). When None
+            and JS domains are configured, a fetcher is created and
+            closed within this call.
     """
+    from scrapers.playwright_fetcher import PLAYWRIGHT_AVAILABLE, PlaywrightFetcher
+
     fetcher = SiteFetcher(user_agent=user_agent)
     enriched = []
+
+    # Playwright: use shared instance or lazy-init a local one
+    js_domains = set(js_rendered_domains or [])
+    _pw_shared = pw_fetcher is not None  # caller owns lifecycle
+    pw_used_count = 0
 
     for result in results:
         url = result.get('url', '')
@@ -273,6 +292,7 @@ def enrich_search_results(results: List[Dict], user_agent: str = "") -> List[Dic
         if url.lower().endswith('.pdf') or '/pdf/' in url.lower():
             result.setdefault('link_status', 'ok')
             result['_enrichment_status'] = 'skipped_pdf'
+            result['_analysis_confidence'] = 'not_fetched'
             enriched.append(result)
             continue
 
@@ -307,16 +327,77 @@ def enrich_search_results(results: List[Dict], user_agent: str = "") -> List[Dic
                 result['technical_markers'] = analysis['technical_markers']
                 result['content_focus'] = analysis['content_focus']
                 result['marker_summary'] = analysis['marker_summary']
+                result['_analysis_confidence'] = 'analyzed'
 
             except Exception:
                 result['link_status'] = 'dead'
                 result['_enrichment_status'] = 'failed'
+                result['_analysis_confidence'] = 'failed'
 
             enriched.append(result)
             continue  # skip normal HTML fetch path
 
         needs_meta = _needs_enrichment(result)
         is_video = _is_video_platform_url(url)
+
+        # Check if this domain needs JS rendering via Playwright
+        domain = extract_domain(url)
+        bare_domain = domain.removeprefix('www.')
+        needs_js = any(
+            bare_domain == d or bare_domain.endswith('.' + d)
+            for d in js_domains
+        )
+
+        if needs_js and PLAYWRIGHT_AVAILABLE:
+            if pw_fetcher is None:
+                pw_fetcher = PlaywrightFetcher()  # local instance, will close below
+            fetcher.rate_limiter.wait()
+            html = pw_fetcher.fetch_page_html(url)
+            if html:
+                soup = BeautifulSoup(html, 'lxml')
+                result['link_status'] = 'ok'
+
+                # Metadata enrichment (only if needed)
+                if needs_meta:
+                    result['title'] = extract_title(soup)
+                    result['description'] = clean_text(
+                        extract_meta_description(soup), max_length=300
+                    )
+                    result['date'] = extract_date(soup)
+                    result['_enrichment_status'] = 'playwright'
+                else:
+                    result['_enrichment_status'] = 'playwright_analyzed'
+
+                # Video title cleanup
+                if is_video:
+                    result['title'] = _clean_video_title(result.get('title', ''))
+
+                # Content analysis on JS-rendered page
+                try:
+                    analysis = analyze_page_content(soup)
+                    result['word_count'] = analysis['word_count']
+                    result['depth'] = analysis['depth']
+                    result['code_blocks'] = analysis['code_blocks']
+                    result['technical_markers'] = analysis['technical_markers']
+                    result['content_focus'] = analysis['content_focus']
+                    result['marker_summary'] = analysis['marker_summary']
+
+                    wc = analysis['word_count']
+                    if wc > 200:
+                        result['_analysis_confidence'] = 'analyzed'
+                    elif wc > 50:
+                        result['_analysis_confidence'] = 'partial'
+                    elif wc > 0:
+                        result['_analysis_confidence'] = 'low'
+                    else:
+                        result['_analysis_confidence'] = 'empty'
+                except Exception:
+                    result['_analysis_confidence'] = 'failed'
+
+                enriched.append(result)
+                pw_used_count += 1
+                continue
+            # Playwright failed — fall through to static fetch
 
         # ALWAYS fetch the page (for content analysis)
         fetcher.rate_limiter.wait()
@@ -326,6 +407,7 @@ def enrich_search_results(results: List[Dict], user_agent: str = "") -> List[Dic
         except Exception:
             result['link_status'] = 'dead'
             result['_enrichment_status'] = 'failed'
+            result['_analysis_confidence'] = 'not_fetched'
             enriched.append(result)
             continue
 
@@ -334,6 +416,7 @@ def enrich_search_results(results: List[Dict], user_agent: str = "") -> List[Dic
 
         if 'text/html' not in content_type:
             result['_enrichment_status'] = 'skipped_nonhtml'
+            result['_analysis_confidence'] = 'not_fetched'
             enriched.append(result)
             continue
 
@@ -363,11 +446,28 @@ def enrich_search_results(results: List[Dict], user_agent: str = "") -> List[Dic
             result['technical_markers'] = analysis['technical_markers']
             result['content_focus'] = analysis['content_focus']
             result['marker_summary'] = analysis['marker_summary']
+
+            # Set analysis confidence based on extracted word count
+            wc = analysis['word_count']
+            if wc > 200:
+                result['_analysis_confidence'] = 'analyzed'
+            elif wc > 50:
+                result['_analysis_confidence'] = 'partial'
+            elif wc > 0:
+                result['_analysis_confidence'] = 'low'
+            else:
+                result['_analysis_confidence'] = 'empty'
         except Exception:
             # Analysis failure is non-fatal — result still usable
-            pass
+            result['_analysis_confidence'] = 'failed'
 
         enriched.append(result)
+
+    # Clean up Playwright browser if we created a local instance
+    if pw_fetcher and not _pw_shared:
+        pw_fetcher.close()
+    if pw_used_count and verbose:
+        print(f"  [playwright] Rendered {pw_used_count} JS pages")
 
     return enriched
 

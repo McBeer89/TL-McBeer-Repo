@@ -34,6 +34,7 @@ from utils import (
     get_cached,
     set_cached,
 )
+from utils.helpers import extract_attack_keywords, is_broad_technique
 
 
 class DuckDuckGoScraper:
@@ -303,11 +304,13 @@ def _build_queries(
     technique_name: str,
     category_name: str,
     extra: str,
+    attack_keywords: Optional[List[str]] = None,
 ) -> List[str]:
     """
     Build search queries tailored to each category's purpose.
 
-    Returns 2-3 queries per category.  Category-specific queries come first
+    Returns 2-3 queries per category (up to 4 when attack_keywords are
+    provided for broad techniques).  Category-specific queries come first
     (most targeted), followed by shared common queries.  Uses exact-phrase
     quoting on the technique's short name to force DuckDuckGo to match
     precisely.
@@ -335,7 +338,14 @@ def _build_queries(
         'academic': [f'"{short_name}" detection research paper{extra}'],
     }
 
-    return category_specific.get(category_name, []) + common
+    queries = category_specific.get(category_name, []) + common
+
+    # For broad techniques, add an enhanced query using ATT&CK description keywords
+    if attack_keywords:
+        kw_str = ' '.join(attack_keywords[:3])
+        queries.append(f'"{short_name}" {kw_str}{extra}')
+
+    return queries
 
 
 def search_technique_sources(
@@ -349,6 +359,7 @@ def search_technique_sources(
     mitre_refs: Optional[List[Dict]] = None,
     use_cache: bool = True,
     tier1_domains: Optional[List[str]] = None,
+    technique_description: str = "",
 ) -> Dict[str, List[Dict]]:
     """
     Search for sources across multiple categories using a two-tier strategy.
@@ -368,6 +379,8 @@ def search_technique_sources(
                     to boost domains that MITRE itself cites)
         use_cache: Whether to use cached search results (1-day TTL)
         tier1_domains: List of high-value domains that get individual queries
+        technique_description: ATT&CK technique description text (used to
+                    extract keywords for broad techniques)
 
     Returns:
         Dictionary mapping category names to lists of results
@@ -377,6 +390,13 @@ def search_technique_sources(
     tier1_set = set(tier1_domains or [])
 
     extra = f" {extra_terms.strip()}" if extra_terms and extra_terms.strip() else ""
+
+    # For broad techniques, extract keywords from the ATT&CK description
+    attack_keywords = []
+    if is_broad_technique(technique_name) and technique_description:
+        attack_keywords = extract_attack_keywords(technique_description)
+        if verbose and attack_keywords:
+            print(f"  [broad-technique] Using ATT&CK keywords: {attack_keywords}")
 
     # Extract short name for tier-1 queries
     short_name = (
@@ -433,7 +453,8 @@ def search_technique_sources(
             tier1_query_count += 1
 
         # --- Tier 2: Batched OR queries (groups of 5, no search_suffix) ---
-        queries = _build_queries(technique_id, technique_name, category_name, extra)
+        queries = _build_queries(technique_id, technique_name, category_name, extra,
+                                 attack_keywords=attack_keywords or None)
 
         for batch_start in range(0, max(len(cat_tier2), 1), 5):
             batch = cat_tier2[batch_start:batch_start + 5]

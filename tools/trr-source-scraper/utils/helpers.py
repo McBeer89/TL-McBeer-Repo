@@ -85,6 +85,121 @@ class ConfigManager:
     def tier1_domains(self) -> List[str]:
         return self.config.get("tier1_domains", [])
 
+    @property
+    def noise_patterns(self) -> Dict:
+        return self.config.get("noise_patterns", {})
+
+    @property
+    def js_rendered_domains(self) -> List[str]:
+        return self.config.get("js_rendered_domains", [])
+
+
+def extract_attack_keywords(description: str, max_keywords: int = 5) -> list:
+    """
+    Extract high-signal search keywords from an ATT&CK technique description.
+
+    Strips boilerplate phrases, then pulls out named system components,
+    security-relevant terms, and process/API names.  Returns a deduplicated
+    list of 3–5 keywords ordered by specificity.
+    """
+    if not description:
+        return []
+
+    # Strip HTML tags
+    text = re.sub(r'<[^>]+>', ' ', description)
+
+    # Remove ATT&CK boilerplate phrases
+    boilerplate = [
+        r'Adversaries may\s+', r'has been used to\s+', r'can be used to\s+',
+        r'This technique\s+', r'may also\s+', r'\(Citation:[^)]+\)',
+        r'are able to\s+', r'is commonly used\s+',
+    ]
+    for pattern in boilerplate:
+        text = re.sub(pattern, ' ', text, flags=re.IGNORECASE)
+
+    keywords = []
+
+    # Named system components (capitalized multi-word terms, 2-4 words)
+    components = re.findall(r'(?:[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)', text)
+    for comp in components:
+        # Skip very generic phrases
+        if comp.lower() not in {'the following', 'for example', 'in addition',
+                                 'such as', 'as well', 'which can', 'united states'}:
+            keywords.append(comp)
+
+    # Known security terms
+    security_terms = {
+        'bypass', 'evasion', 'obfuscation', 'encoded', 'injection',
+        'persistence', 'lateral movement', 'credential', 'privilege escalation',
+        'exfiltration', 'hooking', 'hollowing', 'shellcode', 'payload',
+        'dump', 'keylogging', 'rootkit', 'backdoor', 'implant',
+    }
+    text_lower = text.lower()
+    for term in security_terms:
+        if term in text_lower:
+            keywords.append(term)
+
+    # Process/API/service names (ALL_CAPS or CamelCase identifiers)
+    identifiers = re.findall(r'\b(?:[A-Z][a-z]+[A-Z]\w+|[A-Z]{2,}[a-z]\w+)\b', text)
+    keywords.extend(identifiers)
+
+    # Executable / DLL / service names
+    exe_names = re.findall(r'\b\w+\.(?:exe|dll|sys|ps1)\b', text, re.IGNORECASE)
+    keywords.extend(exe_names)
+
+    # Deduplicate (case-insensitive) while preserving order
+    seen = set()
+    unique = []
+    for kw in keywords:
+        key = kw.lower()
+        if key not in seen and len(key) > 2:
+            seen.add(key)
+            unique.append(kw)
+
+    return unique[:max_keywords]
+
+
+# Known-broad technique names: single common technology words that match everything
+_BROAD_TECHNIQUE_NAMES = {
+    'powershell', 'javascript', 'python', 'vbscript', 'bash',
+    'windows management instrumentation', 'visual basic', 'command shell',
+    'native api', 'scheduled task', 'at', 'mshta', 'cscript', 'wscript',
+    'rundll32', 'regsvr32', 'msiexec', 'cmstp',
+}
+
+
+def is_broad_technique(technique_name: str) -> bool:
+    """
+    Return True if the technique name is so generic that unqualified
+    searches will drown in noise (e.g. "PowerShell", "Python").
+    """
+    name = technique_name.strip().lower()
+    # Technique IDs like 'T1059.001' are not technique names
+    if re.match(r'^t\d{4}', name):
+        return False
+    # Check hardcoded set
+    if name in _BROAD_TECHNIQUE_NAMES:
+        return True
+    # Single common word (≤2 words without a security-specific qualifier)
+    words = name.split()
+    if len(words) <= 2:
+        # Security-specific compound terms are narrow
+        narrow_indicators = {
+            'kerberoasting', 'dcsync', 'pass-the-hash', 'golden ticket',
+            'silver ticket', 'web shell', 'skeleton key', 'as-rep',
+            'overpass-the-hash', 'sid-history',
+        }
+        if name in narrow_indicators:
+            return False
+        # Generic single/double words with no security qualifier
+        security_qualifiers = {
+            'attack', 'exploit', 'injection', 'hijack', 'abuse',
+            'dump', 'spray', 'brute', 'bypass', 'evasion',
+        }
+        if not any(q in name for q in security_qualifiers):
+            return True
+    return False
+
 
 def validate_technique_id(technique_id: str) -> bool:
     """
@@ -157,6 +272,7 @@ def compute_relevance_score(
     technique_name: str,
     mitre_ref_domains: set = None,
     trusted_sources: dict = None,
+    noise_patterns: dict = None,
 ) -> float:
     """
     Score a search result 0.0-1.0.
@@ -172,6 +288,11 @@ def compute_relevance_score(
       Depth:       Long-form (+0.10), Standard (+0.05)
       Code:        >=2 blocks (+0.05)
       Markers:     >=3 categories (+0.10), 1-2 (+0.05)
+
+    Penalties (from noise pattern config — subtracted from score):
+      URL:         known noise URL patterns (worst match only)
+      Title:       known noise title patterns (worst match only)
+      Content:     known noise content patterns (worst match only)
     """
     score = 0.0
     short_name = (
@@ -244,7 +365,49 @@ def compute_relevance_score(
     elif populated_categories >= 1:
         score += 0.05
 
-    return min(score, 1.0)
+    # --- Penalties (from noise pattern config) ---
+    penalties = []
+    if noise_patterns:
+        # URL penalties — take worst match only
+        worst_url_penalty = 0.0
+        worst_url_reason = ''
+        for np in noise_patterns.get('url_penalties', []):
+            if np['pattern'].lower() in url:
+                if np['penalty'] > worst_url_penalty:
+                    worst_url_penalty = np['penalty']
+                    worst_url_reason = np['reason']
+        if worst_url_penalty > 0:
+            penalties.append(('url', worst_url_penalty, worst_url_reason))
+
+        # Title penalties — regex, take worst match only
+        worst_title_penalty = 0.0
+        worst_title_reason = ''
+        for np in noise_patterns.get('title_penalties', []):
+            if re.search(np['pattern'], result.get('title', ''), re.IGNORECASE):
+                if np['penalty'] > worst_title_penalty:
+                    worst_title_penalty = np['penalty']
+                    worst_title_reason = np['reason']
+        if worst_title_penalty > 0:
+            penalties.append(('title', worst_title_penalty, worst_title_reason))
+
+        # Content penalties — only if description was analyzed
+        worst_content_penalty = 0.0
+        worst_content_reason = ''
+        for np in noise_patterns.get('content_penalties', []):
+            if re.search(np['pattern'], desc, re.IGNORECASE):
+                if np['penalty'] > worst_content_penalty:
+                    worst_content_penalty = np['penalty']
+                    worst_content_reason = np['reason']
+        if worst_content_penalty > 0:
+            penalties.append(('content', worst_content_penalty, worst_content_reason))
+
+        score -= (worst_url_penalty + worst_title_penalty + worst_content_penalty)
+
+    # Store penalties on the result dict for downstream reporting
+    if penalties:
+        result['_penalties'] = penalties
+
+    return max(min(score, 1.0), 0.0)
 
 
 def extract_domain(url: str) -> str:

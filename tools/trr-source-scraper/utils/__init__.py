@@ -19,8 +19,10 @@ from utils.helpers import (
     get_category_for_domain,
     format_date,
     deduplicate_results,
+    extract_attack_keywords,
+    is_broad_technique,
 )
-from utils.cache import get_cached, set_cached
+from utils.cache import get_cached, set_cached, get_cache_stats, reset_cache_stats
 from utils.content_analysis import analyze_page_content, analyze_raw_text
 
 __all__ = [
@@ -42,6 +44,10 @@ __all__ = [
     'deduplicate_results',
     'get_cached',
     'set_cached',
+    'get_cache_stats',
+    'reset_cache_stats',
     'analyze_page_content',
     'analyze_raw_text',
+    'extract_attack_keywords',
+    'is_broad_technique',
 ]

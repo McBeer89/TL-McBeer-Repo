@@ -12,6 +12,20 @@ from typing import Any, Optional
 
 _CACHE_DIR = Path(__file__).parent.parent / "output" / ".cache"
 
+# Module-level cache statistics
+_cache_stats = {'hits': 0, 'misses': 0, 'expired': 0, 'errors': 0}
+
+
+def get_cache_stats() -> dict:
+    """Return a copy of the current cache hit/miss statistics."""
+    return dict(_cache_stats)
+
+
+def reset_cache_stats():
+    """Reset all cache statistics to zero."""
+    for k in _cache_stats:
+        _cache_stats[k] = 0
+
 
 def _cache_path(key: str) -> Path:
     """Return the file path for a given cache key."""
@@ -32,6 +46,7 @@ def get_cached(key: str, ttl_days: int = 7) -> Optional[Any]:
     """
     path = _cache_path(key)
     if not path.exists():
+        _cache_stats['misses'] += 1
         return None
 
     try:
@@ -39,9 +54,12 @@ def get_cached(key: str, ttl_days: int = 7) -> Optional[Any]:
             entry = json.load(f)
         stored_at = entry.get("_cached_at", 0)
         if time.time() - stored_at > ttl_days * 86400:
+            _cache_stats['expired'] += 1
             return None
+        _cache_stats['hits'] += 1
         return entry.get("data")
     except Exception:
+        _cache_stats['errors'] += 1
         return None
 
 

@@ -51,12 +51,16 @@ from utils import (
     extract_domain,
     format_date,
     get_category_for_domain,
+    get_cache_stats,
+    reset_cache_stats,
 )
+from utils.helpers import extract_attack_keywords, is_broad_technique
 
-# v1.5: Content analysis for enriched search results — word count, depth,
-#        code blocks, technical markers, content focus tags. Relevance scoring
-#        moved to run after enrichment so body-content signals are available.
-REPORT_VERSION = "1.5"
+# v1.6: Query intelligence (broad technique keywords, noise penalties),
+#        data quality (analysis confidence, cache stats, enrichment status),
+#        report enhancements (coverage gaps, research checklist export),
+#        optional Playwright integration for JS-rendered sites.
+REPORT_VERSION = "1.6"
 
 DEFAULT_TECHNIQUE_INFO = {
     "id": "",
@@ -243,6 +247,18 @@ Examples:
         choices=["windows", "linux", "macos", "azure", "ad"],
         default="",
         help="Target platform — moves off-platform results to end of report",
+    )
+
+    parser.add_argument(
+        "--checklist",
+        action="store_true",
+        help="Generate a markdown research checklist alongside the report",
+    )
+
+    parser.add_argument(
+        "--no-playwright",
+        action="store_true",
+        help="Skip Playwright rendering even for JS-heavy sites",
     )
 
     return parser.parse_args()
@@ -627,7 +643,9 @@ def _normalize_search_result(result: Dict) -> Dict:
         "relevance_score": result.get("relevance_score", 0.0),
         "link_status": result.get("link_status"),
         "source_type": _classify_source_type(result),
-        "enrichment_status": result.get("_enrichment_status", ""),
+        "enrichment_status": result.get("_enrichment_status", "not_enriched"),
+        "analysis_confidence": result.get("_analysis_confidence", "not_enriched"),
+        "penalties": result.get("_penalties", []),
         # Content analysis fields (empty defaults when not enriched)
         "word_count": result.get("word_count", 0),
         "depth": result.get("depth", ""),
@@ -727,6 +745,11 @@ def _render_search_result(
         label = "code sample" if code_blocks == 1 else "code samples"
         meta_parts.append(f"{code_blocks} {label}")
 
+    # Analysis confidence warning for problematic results
+    confidence = result.get('_analysis_confidence', '')
+    if confidence in ('empty', 'low', 'failed', 'not_fetched'):
+        meta_parts.append(f"\u26a0 {confidence}")
+
     if meta_parts:
         lines.append(f"> {' \u00b7 '.join(meta_parts)}")
         lines.append("")
@@ -757,6 +780,222 @@ def _render_search_result(
     lines.append("")
 
 
+_CATEGORY_DISPLAY_NAMES = {
+    'security_research': 'Security Research Blogs',
+    'microsoft_docs': 'Microsoft Documentation',
+    'github': 'GitHub Repositories',
+    'sigma_rules': 'Sigma Detection Rules',
+    'conferences': 'Conference Talks',
+    'lolbas_gtfobins': 'LOLBAS / GTFOBins',
+    'academic': 'Academic Papers',
+}
+
+
+def _compute_coverage_gaps(
+    search_results: Dict[str, List[Dict]],
+    config: 'ConfigManager',
+) -> List[Dict]:
+    """
+    Identify source categories with poor or missing coverage.
+
+    Returns list of dicts:
+      {'category': str, 'status': str, 'detail': str}
+
+    Status values:
+      'empty'    -- category returned 0 results after filtering
+      'weak'     -- all results scored below 40% (Possible Match only)
+      'shallow'  -- results exist but none had content analysis
+    """
+    gaps = []
+
+    for category in config.trusted_sources:
+        results = search_results.get(category, [])
+        display_name = _CATEGORY_DISPLAY_NAMES.get(category, category.replace('_', ' ').title())
+
+        if not results:
+            gaps.append({
+                'category': display_name,
+                'status': 'empty',
+                'detail': 'No results found in this category',
+            })
+            continue
+
+        # Check if all results are weak (below 40%)
+        all_weak = all(r.get('relevance_score', 0) < 0.40 for r in results)
+        if all_weak:
+            gaps.append({
+                'category': display_name,
+                'status': 'weak',
+                'detail': f'{len(results)} results found but all scored below 40%',
+            })
+            continue
+
+        # Check if none could be content-analyzed
+        poor_confidence = {'empty', 'low', 'failed', 'not_fetched', 'not_enriched'}
+        all_shallow = all(
+            r.get('_analysis_confidence', 'not_enriched') in poor_confidence
+            for r in results
+        )
+        if all_shallow:
+            gaps.append({
+                'category': display_name,
+                'status': 'shallow',
+                'detail': f'{len(results)} results found but none could be content-analyzed (likely JS-rendered)',
+            })
+
+    return gaps
+
+
+def generate_research_checklist(
+    technique_id: str,
+    technique_name: str,
+    search_results: Dict[str, List[Dict]],
+    atomic_tests: List[Dict],
+    existing_trrs: List[Dict],
+    min_score: float = 0.25,
+    top_n: int = 20,
+    platform: str = "",
+    trr_id: str = "",
+) -> str:
+    """
+    Generate a markdown research checklist — a prioritized action-items view
+    of the top sources for the researcher to review.
+    """
+    lines = []
+    timestamp = datetime.now().strftime("%Y-%m-%d")
+
+    # Header
+    title_parts = [f"# Research Checklist — {technique_id} {technique_name}"]
+    if trr_id:
+        title_parts[0] += f" ({trr_id})"
+    lines.append(title_parts[0])
+    lines.append("")
+
+    meta = f"**Generated:** {timestamp}"
+    if platform:
+        meta += f" \u00b7 **Platform:** {platform.title()}"
+    meta += f" \u00b7 **Top {top_n} sources by relevance**"
+    lines.append(meta)
+    lines.append("")
+
+    # Flatten all results, sort by score, take top N
+    all_results = []
+    for cat_results in search_results.values():
+        for r in cat_results:
+            if r.get('relevance_score', 0) >= min_score:
+                all_results.append(r)
+    all_results.sort(key=lambda r: r.get('relevance_score', 0), reverse=True)
+    top_results = all_results[:top_n]
+
+    # Group into tiers
+    strong = [r for r in top_results if r.get('relevance_score', 0) >= 0.60]
+    review = [r for r in top_results if 0.40 <= r.get('relevance_score', 0) < 0.60]
+    check = [r for r in top_results if r.get('relevance_score', 0) < 0.40]
+
+    def _render_checklist_item(r: Dict) -> List[str]:
+        """Render a single checklist item."""
+        item_lines = []
+        title = r.get('title', 'Untitled')
+        url = r.get('url', '')
+        score = r.get('relevance_score', 0)
+        domain = r.get('domain', '')
+        date = r.get('date', '')
+
+        item_lines.append(f"- [ ] [{title}]({url}) — {score:.0%}")
+
+        # Metadata sub-line
+        meta_parts = []
+        if domain:
+            meta_parts.append(domain)
+        if date:
+            meta_parts.append(format_date(date))
+        word_count = r.get('word_count', 0)
+        depth = r.get('depth', '')
+        if word_count and depth and depth != 'Unknown':
+            meta_parts.append(f"~{word_count:,} words ({depth})")
+
+        # Content focus tags
+        content_focus = r.get('content_focus', [])
+        if content_focus:
+            meta_parts.append(' '.join(content_focus))
+
+        code_blocks = r.get('code_blocks', 0)
+        if code_blocks > 0:
+            label = "code sample" if code_blocks == 1 else "code samples"
+            meta_parts.append(f"{code_blocks} {label}")
+
+        confidence = r.get('_analysis_confidence', '')
+        if confidence in ('empty', 'low', 'failed', 'not_fetched'):
+            meta_parts.append(f"\u26a0 {confidence}")
+
+        if meta_parts:
+            item_lines.append(f"  > {' \u00b7 '.join(meta_parts)}")
+
+        # Marker summary (if present)
+        marker_summary = r.get('marker_summary', '')
+        if marker_summary:
+            item_lines.append(f"  > Markers: {marker_summary}")
+
+        return item_lines
+
+    # Render tiers
+    if strong:
+        lines.append(f"## Priority Sources (Strong Match \u226560%)")
+        lines.append("")
+        for r in strong:
+            lines.extend(_render_checklist_item(r))
+            lines.append("")
+
+    if review:
+        lines.append(f"## Review Sources (Likely Relevant 40-59%)")
+        lines.append("")
+        for r in review:
+            lines.extend(_render_checklist_item(r))
+            lines.append("")
+
+    if check:
+        lines.append(f"## Check Sources (Possible Match 25-39%)")
+        lines.append("")
+        for r in check:
+            lines.extend(_render_checklist_item(r))
+            lines.append("")
+
+    if not top_results:
+        lines.append("*No sources passed the relevance threshold.*")
+        lines.append("")
+
+    # Existing Coverage
+    lines.append("## Existing Coverage")
+    lines.append("")
+    if existing_trrs:
+        for trr in existing_trrs:
+            trr_label = trr.get('trr_id', '') or trr.get('file_name', 'Unknown')
+            title = trr.get('title', '')
+            detail = f" — {title}" if title else " (existing TRR found)"
+            lines.append(f"- [x] {trr_label}{detail}")
+    else:
+        lines.append("- [ ] No existing TRRs found for this technique")
+
+    if atomic_tests:
+        n = len(atomic_tests)
+        word = "test" if n == 1 else "tests"
+        lines.append(f"- [ ] {n} Atomic Red Team {word} available ({technique_id})")
+    else:
+        lines.append("- [ ] No Atomic Red Team tests available")
+
+    lines.append("")
+
+    # Notes section
+    lines.append("## Notes")
+    lines.append("")
+    lines.append("_Use this space for research notes as you review sources._")
+    lines.append("")
+    lines.append("---")
+    lines.append(f"*Generated by TRR Source Scraper v{REPORT_VERSION}*")
+
+    return '\n'.join(lines)
+
+
 def generate_markdown_report(
     technique_id: str,
     technique_info: Optional[Dict],
@@ -771,6 +1010,7 @@ def generate_markdown_report(
     min_score: float = 0.25,
     trr_id: str = "",
     platform: str = "",
+    search_focus_terms: Optional[List[str]] = None,
 ) -> str:
     """
     Generate a markdown report with all gathered information.
@@ -834,6 +1074,25 @@ def generate_markdown_report(
         platform_filter=platform,
         trr_id=trr_id,
     ))
+
+    # Search focus terms (shown when broad-technique keyword extraction was used)
+    if search_focus_terms:
+        lines.append(f"> **Search focus terms:** {', '.join(search_focus_terms)}")
+        lines.append("")
+
+    # Coverage Gaps (only when DDG search was run)
+    if not no_ddg:
+        gaps = _compute_coverage_gaps(search_results, config)
+        if gaps:
+            lines.append("## Coverage Gaps")
+            lines.append("")
+            lines.append("The following source categories may need manual research:")
+            lines.append("")
+            for gap in gaps:
+                lines.append(f"- **{gap['category']}** — {gap['detail']}")
+            lines.append("")
+            lines.append("---")
+            lines.append("")
 
     # MITRE ATT&CK Reference
     if technique_info:
@@ -1155,6 +1414,7 @@ def main():
         print_progress(f"         Running {t1_count} focused queries for high-value sources...", always=True, quiet=quiet)
         print_progress(f"         Plus sweep queries across {len(config.trusted_sources)} categories...", always=True, quiet=quiet)
 
+        reset_cache_stats()  # Scope cache stats to DDG search queries only
         search_results = search_technique_sources(
             technique_id=technique_id,
             technique_name=technique_name,
@@ -1166,18 +1426,52 @@ def main():
             mitre_refs=technique_info.get('references', []) if technique_info else None,
             use_cache=not args.no_cache,
             tier1_domains=config.tier1_domains,
+            technique_description=technique_info.get('description', '') if technique_info else '',
         )
 
         total_results = sum(len(r) for r in search_results.values())
         print_progress(f"         Found {total_results} potential sources across all categories", always=True, quiet=quiet)
 
+        # Cache performance summary
+        cache_stats = get_cache_stats()
+        if cache_stats['hits'] > 0 or cache_stats['expired'] > 0:
+            print_progress(
+                f"         Cache: {cache_stats['hits']} hits, "
+                f"{cache_stats['misses']} misses, "
+                f"{cache_stats['expired']} expired",
+                always=True, quiet=quiet,
+            )
+
     # Step 5: Enrich results with metadata (optional)
     total_results = sum(len(r) for r in search_results.values())
     if not args.no_enrich and not args.no_ddg and total_results > 0:
         print_progress("Step 5/6 — Enriching results with page metadata...", always=True, quiet=quiet)
-        for category, results in search_results.items():
-            if results:
-                search_results[category] = enrich_search_results(results, user_agent)
+        js_domains = [] if args.no_playwright else config.js_rendered_domains
+
+        # Create a shared Playwright fetcher (if available) to reuse one
+        # browser instance across all categories rather than launching
+        # a new Chromium per category.
+        pw_fetcher = None
+        if js_domains:
+            try:
+                from scrapers.playwright_fetcher import PLAYWRIGHT_AVAILABLE, PlaywrightFetcher
+                if PLAYWRIGHT_AVAILABLE:
+                    pw_fetcher = PlaywrightFetcher()
+            except Exception:
+                pass  # Playwright import or init failed — proceed without it
+
+        try:
+            for category, results in search_results.items():
+                if results:
+                    search_results[category] = enrich_search_results(
+                        results, user_agent,
+                        js_rendered_domains=js_domains,
+                        verbose=verbose,
+                        pw_fetcher=pw_fetcher,
+                    )
+        finally:
+            if pw_fetcher:
+                pw_fetcher.close()
         # Report enrichment stats
         enriched_count = sum(
             1 for cat_results in search_results.values()
@@ -1192,6 +1486,16 @@ def main():
             f"Content analyzed: {analyzed_count} of {total_results}",
             always=True, quiet=quiet,
         )
+        # Playwright stats
+        playwright_count = sum(
+            1 for cat_results in search_results.values()
+            for r in cat_results if r.get('_enrichment_status') in ('playwright', 'playwright_analyzed')
+        )
+        if playwright_count:
+            print_progress(
+                f"         Playwright rendered: {playwright_count}",
+                always=True, quiet=quiet,
+            )
     elif args.validate_links and not args.no_ddg and total_results > 0:
         print_progress("Step 5/6 — Validating links (HEAD requests only)...", always=True, quiet=quiet)
         for category, results in search_results.items():
@@ -1225,11 +1529,16 @@ def main():
                 r['relevance_score'] = compute_relevance_score(
                     r, technique_id, technique_name, mitre_ref_domains,
                     trusted_sources=config.trusted_sources,
+                    noise_patterns=config.noise_patterns,
                 )
                 # Results from category-scoped queries (e.g. site:github.com/SigmaHQ)
                 # are already pre-filtered to be relevant; give them a boost
                 if r.get('_scoped_query'):
                     r['relevance_score'] = min(r['relevance_score'] + 0.20, 1.0)
+                # Show penalty breakdown in verbose mode
+                if verbose and r.get('_penalties'):
+                    for ptype, pval, preason in r['_penalties']:
+                        print(f"    [-{pval:.0%} {ptype}] {preason}: {r.get('title', '')[:60]}")
             # Sort by relevance score descending, then filter
             results.sort(key=lambda r: r.get('relevance_score', 0), reverse=True)
             search_results[category] = [
@@ -1256,6 +1565,13 @@ def main():
                 always=True, quiet=quiet,
             )
 
+    # Compute search focus terms for the report (broad technique keyword extraction)
+    search_focus_terms = []
+    if technique_info and is_broad_technique(technique_name):
+        search_focus_terms = extract_attack_keywords(
+            technique_info.get('description', '')
+        )
+
     # Generate report
     report = generate_markdown_report(
         technique_id=technique_id,
@@ -1271,6 +1587,7 @@ def main():
         min_score=min_score,
         trr_id=args.trr_id,
         platform=args.platform or "",
+        search_focus_terms=search_focus_terms,
     )
 
     # Determine output filename suffix
@@ -1327,6 +1644,27 @@ def main():
         with open(json_file, 'w', encoding='utf-8') as f:
             json.dump(raw_data, f, indent=2, ensure_ascii=False)
         print(f"JSON saved to:  {json_file}")
+
+    # Optionally generate research checklist
+    if args.checklist and not search_results:
+        print("Checklist skipped: no search results (use without --no-ddg)")
+    elif args.checklist and search_results:
+        checklist = generate_research_checklist(
+            technique_id=technique_id,
+            technique_name=technique_name,
+            search_results=search_results,
+            atomic_tests=atomic_tests,
+            existing_trrs=existing_trrs,
+            min_score=min_score,
+            top_n=20,
+            platform=args.platform or "",
+            trr_id=args.trr_id,
+        )
+        json_base = args.trr_id if args.trr_id else technique_id
+        checklist_file = output_dir / f"{json_base}_research_checklist.md"
+        with open(checklist_file, 'w', encoding='utf-8') as f:
+            f.write(checklist)
+        print(f"Checklist saved: {checklist_file}")
 
     print("")
     print("=" * 55)

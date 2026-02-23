@@ -106,6 +106,38 @@
       "search_suffix": "research paper"
     }
   },
+  "noise_patterns": {
+    "url_penalties": [
+      {"pattern": "learn.microsoft.com/en-us/dotnet/api/", "penalty": 0.30, "reason": ".NET API reference"},
+      {"pattern": "developer.mozilla.org", "penalty": 0.30, "reason": "MDN web docs"},
+      {"pattern": "learn.microsoft.com/en-us/dynamics", "penalty": 0.25, "reason": "Dynamics CRM docs"},
+      {"pattern": "/nuget/", "penalty": 0.20, "reason": "NuGet package page"},
+      {"pattern": "stackoverflow.com/questions", "penalty": 0.10, "reason": "Stack Overflow"},
+      {"pattern": "reddit.com/r/", "penalty": 0.10, "reason": "Reddit thread"},
+      {"pattern": "learn.microsoft.com/en-us/aspnet/", "penalty": 0.15, "reason": "ASP.NET framework docs"},
+      {"pattern": "pypi.org/project/", "penalty": 0.20, "reason": "PyPI package listing"}
+    ],
+    "title_penalties": [
+      {"pattern": "Class \\(", "penalty": 0.20, "reason": "API class reference"},
+      {"pattern": "Namespace \\|", "penalty": 0.20, "reason": "API namespace reference"},
+      {"pattern": "NuGet Gallery", "penalty": 0.20, "reason": "Package listing"},
+      {"pattern": "^Install\\b|^Setup\\b|Getting Started", "penalty": 0.10, "reason": "Setup/install page"}
+    ],
+    "content_penalties": [
+      {"pattern": "npm install|pip install|dotnet add package", "penalty": 0.10, "reason": "Package install instructions"},
+      {"pattern": "cookie policy|privacy policy|terms of service", "penalty": 0.15, "reason": "Boilerplate legal page"}
+    ]
+  },
+  "js_rendered_domains": [
+    "crowdstrike.com",
+    "elastic.co",
+    "redcanary.com",
+    "techcommunity.microsoft.com",
+    "securelist.com",
+    "unit42.paloaltonetworks.com",
+    "mandiant.com"
+  ],
+
   "search_settings": {
     "max_results_per_category": 10,
     "delay_between_requests": 2,

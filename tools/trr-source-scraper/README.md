@@ -40,12 +40,18 @@ Output is written to `output/` as a markdown report. Add `--json` for machine-re
 | `--trr-repo org/repo` | Override the TRR repository (default: `tired-labs/techniques`) |
 | `--validate-links` | Check for dead links (HEAD requests only, use with `--no-enrich`) |
 | `--verbose` | Show per-category search diagnostics |
+| `--checklist` | Generate a markdown research checklist alongside the report |
+| `--no-playwright` | Skip Playwright rendering even for JS-heavy sites |
 
 ## What the Report Contains
 
 The markdown brief includes a **Research Summary** table (tactics, platforms, test counts, DDM starting points), **MITRE ATT&CK reference** data, **Atomic Red Team tests** with inline commands and arguments, **existing TRR/DDM matches** from the TIRED Labs library, and **categorized search results** sorted by relevance with source type tags (`Detection`, `Threat Intel`, `Reference`).
 
-Results scoring below 25% relevance are filtered by default. Relevance is computed from technique ID/name presence in titles, descriptions, and URLs, with a boost for domains cited in MITRE's own references.
+A **Coverage Gaps** section flags source categories that returned no results, only weak matches, or couldn't be content-analyzed (likely JS-rendered). A content **analysis confidence** indicator warns when page content couldn't be extracted.
+
+Results scoring below 25% relevance are filtered by default. Relevance is computed from technique ID/name presence in titles, descriptions, and URLs, with boosts for trusted domains and MITRE-cited sources, and penalties for known noise patterns (API reference pages, package listings, legal boilerplate).
+
+Use `--checklist` to generate a prioritized **research checklist** (`_research_checklist.md`) — a checkbox-formatted action list of the top 20 sources grouped by relevance tier (Strong Match, Likely Relevant, Possible Match) with metadata sub-lines and marker summaries.
 
 ## How Search Works
 
@@ -54,6 +60,8 @@ Results scoring below 25% relevance are filtered by default. Relevance is comput
 **Tier 2** — Batched OR queries across remaining domains in each category (groups of 5). Category-specific queries target Sigma rules, LOLBAS/GTFOBins, and academic papers with tailored search terms.
 
 Results are deduplicated across categories, GitHub forks are collapsed to canonical repos, and noise filters remove off-topic pages (e.g., PowerShell cmdlet docs for non-PowerShell techniques, non-English locale pages, author/tag index pages, Sigma PRs and coverage maps).
+
+For **broad techniques** (PowerShell, Scheduled Task, etc.), the scraper extracts keywords from the ATT&CK description and generates enhanced search queries to surface more specific results. Search focus terms are shown in the report header.
 
 Search results are cached for 1 day in `output/.cache/`.
 
@@ -69,6 +77,10 @@ All settings live in `config/sources.json`. The defaults work well — only edit
 
 **TRR repository** (`trr_repository`): GitHub repo for existing TRR/DDM matching. Default: `tired-labs/techniques`.
 
+**Noise patterns** (`noise_patterns`): URL, title, and content patterns that penalize irrelevant results (e.g., .NET API reference, NuGet package pages, legal boilerplate). Penalties are subtracted from relevance scores. Only the worst match per category is applied.
+
+**JS-rendered domains** (`js_rendered_domains`): Domains that require Playwright for content extraction. Static HTTP fetches return empty HTML for these sites. See [Troubleshooting](#troubleshooting) for install instructions.
+
 ## Project Structure
 
 ```
@@ -79,10 +91,12 @@ trr-source-scraper/
 │   ├── duckduckgo.py        # Search with tier-1/tier-2 strategy
 │   ├── existing_trr.py      # GitHub TRR/DDM scanner
 │   ├── site_fetcher.py      # Page metadata enrichment
+│   ├── playwright_fetcher.py # Optional JS rendering via Playwright
 │   └── atomic_red_team.py   # Atomic Red Team YAML fetcher
 ├── utils/
 │   ├── helpers.py           # Scoring, filtering, URL validation
-│   └── cache.py             # File-based JSON cache with TTL
+│   ├── cache.py             # File-based JSON cache with TTL
+│   └── content_analysis.py  # Word count, technical markers, focus tags
 ├── config/
 │   └── sources.json         # Domains, settings, TRR repo config
 └── output/                  # Reports and search cache
@@ -97,3 +111,11 @@ trr-source-scraper/
 **Slow performance**: Use `--no-enrich` to skip metadata fetching, or reduce `--max-per-category`.
 
 **MITRE fetch failures**: The tool continues with limited info. Technique data is cached for 7 days after a successful fetch.
+
+**JS-rendered sites show empty content**: Install Playwright for full content extraction from CrowdStrike, Elastic, Red Canary, and other JS-heavy sites:
+
+```bash
+pip install playwright && playwright install chromium
+```
+
+The scraper works without Playwright — JS-heavy pages will fall back to static fetch with reduced content analysis. Use `--no-playwright` to disable rendering even when installed.

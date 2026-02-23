@@ -12,3 +12,6 @@ pyyaml>=6.0
 
 # DuckDuckGo search (replaces fragile HTML scraping)
 ddgs>=9.0
+
+# Optional: JS-rendered site support (Playwright)
+# pip install playwright && playwright install chromium
