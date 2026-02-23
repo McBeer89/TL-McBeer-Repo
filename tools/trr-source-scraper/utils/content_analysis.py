@@ -89,18 +89,22 @@ def _extract_article_text(soup: BeautifulSoup, max_chars: int = 50000) -> str:
                                'script', 'style', 'noscript']):
         tag.decompose()
 
-    # Remove by common class/id patterns
+    # Remove by common class/id patterns (two-pass to avoid BS4 decompose()
+    # poisoning descendants still in the find_all list)
     noise_patterns = [
         'sidebar', 'nav', 'menu', 'footer', 'header', 'comment',
         'advertisement', 'ad-', 'social', 'share', 'related',
         'breadcrumb', 'pagination', 'cookie', 'banner',
     ]
+    to_remove = []
     for element in soup.find_all(True):
         classes = ' '.join(element.get('class', []))
         elem_id = element.get('id', '')
         combined = f"{classes} {elem_id}".lower()
         if any(p in combined for p in noise_patterns):
-            element.decompose()
+            to_remove.append(element)
+    for element in to_remove:
+        element.decompose()
 
     # Try to find the main content container
     main = (
