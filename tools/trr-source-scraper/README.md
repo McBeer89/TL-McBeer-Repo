@@ -1,6 +1,6 @@
 # TRR Source Scraper
 
-Automated research source discovery for MITRE ATT&CK techniques. Gathers sources from MITRE ATT&CK, Atomic Red Team, and DuckDuckGo (security blogs, Microsoft docs, Sigma rules, GitHub, academic papers, conference talks), and outputs a structured markdown research brief with optional JSON and source analysis.
+Automated research source discovery for MITRE ATT&CK techniques. Gathers sources from MITRE ATT&CK, Atomic Red Team, and DuckDuckGo (security blogs, Microsoft docs, Sigma rules, GitHub, academic papers, conference talks), and outputs a structured markdown research brief with optional JSON output.
 
 No API keys required.
 
@@ -19,11 +19,11 @@ python trr_scraper.py T1505.003 --no-enrich
 # Offline (MITRE + Atomic only, no web search)
 python trr_scraper.py T1003.006 --no-ddg
 
-# Full run with JSON + source analysis
-python trr_scraper.py T1505.003 --name "Web Shell" --platform windows --json --source-analysis
+# Full run with JSON output
+python trr_scraper.py T1505.003 --name "Web Shell" --platform windows --json
 ```
 
-Output is written to `output/` as a markdown report. Add `--json` for machine-readable output and `--source-analysis` for a prioritized source analysis.
+Output is written to `output/` as a markdown report. Add `--json` for machine-readable output.
 
 ### Optional: Playwright for JS-Rendered Sites
 
@@ -44,7 +44,6 @@ Playwright is fully optional. The scraper works without it — JS-heavy results 
 | `--no-enrich` | Skip page metadata fetching (faster) |
 | `--no-ddg` | Skip web search entirely (offline mode) |
 | `--json` | Write structured JSON alongside markdown |
-| `--source-analysis` | Generate a prioritized source analysis alongside the report |
 | `--no-cache` | Force fresh queries (default: 1-day cache) |
 | `--no-playwright` | Skip Playwright rendering even if installed |
 | `--extra-terms "mimikatz"` | Append terms to every search query |
@@ -76,23 +75,6 @@ Each result includes:
 - Content focus tags: Detection, Execution, Technical, Threat Intel, General
 - Analysis confidence: `analyzed`, `partial`, `low`, `empty`, `failed`, or `not_fetched`
 - Noise penalties (when applied) visible in `--verbose` mode
-
-### Source Analysis (`--source-analysis`)
-
-Generates a separate markdown file with prioritized sources for review:
-
-```markdown
-## Priority Sources (Strong Match ≥60%)
-
-- [IIS Raid – Backdooring IIS](https://example.com/...) — 82%
-  > specterops.io · ~3,200 words (Long-form) · 4 code samples
-  > Markers: event_ids: 4688, Sysmon 1; processes: w3wp.exe
-
-## Review Sources (Likely Relevant 40-59%)
-...
-```
-
-Sources that couldn't be content-analyzed are flagged with `⚠ empty`, `⚠ low`, or `⚠ failed` so the researcher knows which ones need manual inspection.
 
 ## How Search Works
 
@@ -183,7 +165,7 @@ All settings live in `config/sources.json`. The defaults work well — only edit
 
 ```
 trr-source-scraper/
-├── trr_scraper.py              # Entry point, report generation, source analysis generation
+├── trr_scraper.py              # Entry point, report generation
 ├── scrapers/
 │   ├── mitre_attack.py         # ATT&CK API fetch
 │   ├── duckduckgo.py           # Search with tier-1/tier-2 strategy + broad technique queries
@@ -196,7 +178,7 @@ trr-source-scraper/
 │   └── cache.py                # File-based JSON cache with TTL and stats
 ├── config/
 │   └── sources.json            # Domains, noise patterns, JS domains, settings
-├── output/                     # Reports, source analysis, JSON, and search cache
+├── output/                     # Reports, JSON, and search cache
 │   └── .cache/                 # Cached search results (auto-managed)
 ├── requirements.txt
 └── README.md
@@ -228,7 +210,7 @@ This tool follows ethical scraping practices:
 
 ## Version History
 
-**v1.6** (current) — Broad technique query intelligence, noise penalty scoring, content analysis confidence flags, coverage gap detection, source analysis export, Playwright integration for JS-rendered sites, cache diagnostics, enrichment status in JSON output.
+**v1.6** (current) — Broad technique query intelligence, noise penalty scoring, content analysis confidence flags, coverage gap detection, Playwright integration for JS-rendered sites, cache diagnostics, enrichment status in JSON output.
 
 **v1.5** — Content analysis (word count, depth, code blocks, technical markers, content focus tags). Relevance scoring runs after enrichment. GitHub raw file analysis.
 

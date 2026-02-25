@@ -37,7 +37,9 @@
         "securityintelligence.com",
         "sentinelone.com",
         "blog.talosintelligence.com",
-        "research.nccgroup.com"
+        "research.nccgroup.com",
+        "blog.blacklanternsecurity.com",
+        "ired.team"
       ],
       "search_prefix": "",
       "search_suffix": "security research analysis detection"
@@ -85,6 +87,7 @@
     },
     "lolbas_gtfobins": {
       "priority": "medium",
+      "strict_domains": true,
       "domains": [
         "lolbas-project.github.io",
         "gtfobins.github.io",

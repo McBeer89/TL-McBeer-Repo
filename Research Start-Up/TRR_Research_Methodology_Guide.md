@@ -44,7 +44,7 @@ source of truth about a technique. Everything downstream derives from it.
 - A MITRE ATT&CK technique or sub-technique to research (additional mappings
   to other matrices like the Azure Threat Research Matrix can be noted in the
   TRR metadata)
-- Access to the [TIRED Labs TRR spec] for format requirements
+- Access to the [TIRED Labs TRR Library](https://library.tired-labs.org) for format requirements
 - Access to the [Arrows App] for building DDMs
 - A text editor for your research notes and TRR draft
 - Time and patience — depth matters more than speed
@@ -560,45 +560,12 @@ the section-by-section structure and writing guidance.
 
 ## References
 
-### Methodology
+- [Arrows App](https://arrows.app/) — DDM diagramming
+- [Atomic Red Team](https://github.com/redcanaryco/atomic-red-team) — emulation tests
+- [Stratus Red Team](https://github.com/DataDog/stratus-red-team) — cloud emulation
+- [MITRE ATT&CK](https://attack.mitre.org/)
+- [Azure Threat Research Matrix](https://microsoft.github.io/Azure-Threat-Research-Matrix/)
+- [TIRED Labs TRR Library](https://library.tired-labs.org)
 
-- [Threat Detection Engineering: The Series — VanVleet]:
-  https://medium.com/@vanvleet/threat-detection-engineering-the-series-7fe818fdfe62
-- [Improving Threat Identification with Detection Modeling — VanVleet]:
-  https://medium.com/@vanvleet/improving-threat-identification-with-detection-data-models-1cad2f8ce051
-- [Technique Analysis and Modeling — VanVleet]:
-  https://medium.com/@vanvleet/technique-analysis-and-modeling-b95f48b0214c
-- [Creating Resilient Detections — VanVleet]:
-  https://medium.com/@vanvleet/creating-resilient-detections-db648a352854
-- [Technique Research Reports: Capturing and Sharing Threat Research — VanVleet]:
-  https://medium.com/@vanvleet/technique-research-reports-capturing-and-sharing-threat-research-9512f36dcf5c
-- [What is a Procedure? — Jared Atkinson]:
-  https://posts.specterops.io/on-detection-tactical-to-function-810c14798f63
-- [Thoughts on Detection — Jared Atkinson]:
-  https://posts.specterops.io/thoughts-on-detection-3c5cab66f511
-
-### TRR Resources
-
-- [TIRED Labs TRR Library]:
-  https://library.tired-labs.org
-- [TIRED Labs Contribution Guide]:
-  https://github.com/tired-labs/techniques/blob/main/docs/CONTRIBUTING.md
-- [TRR Specification]:
-  https://github.com/tired-labs/techniques/blob/main/docs/TECHNIQUE-RESEARCH-REPORT.md
-
-### Tools
-
-- [Arrows App] (DDM diagramming):
-  https://arrows.app/
-- [Atomic Red Team] (emulation tests):
-  https://github.com/redcanaryco/atomic-red-team
-- [Stratus Red Team] (cloud emulation):
-  https://github.com/DataDog/stratus-red-team
-- [MITRE ATT&CK]:
-  https://attack.mitre.org/
-- [Azure Threat Research Matrix]:
-  https://microsoft.github.io/Azure-Threat-Research-Matrix/
-
-[TIRED Labs TRR spec]: https://library.tired-labs.org
 [Arrows App]: https://arrows.app/
 [Atomic Red Team]: https://github.com/redcanaryco/atomic-red-team

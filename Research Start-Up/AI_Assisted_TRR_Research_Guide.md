@@ -143,7 +143,13 @@ The AI is your research partner, not your entire toolkit. You'll also need:
 |------|---------|-------|
 | **Claude Code** | Implementation work | Useful for writing lab scripts, automating file operations, building tooling. Has subagent capabilities for complex multi-step tasks. |
 | **Cline (VS Code extension)** | Automated file ops and git | MCP server integration for file system, git, and browser automation. Good for routine execution while keeping Claude.ai free for analysis. |
-| **Local LLM (e.g., Qwen via LM Studio)** | Offline work | For research and drafting when you don't want to burn API credits on routine tasks. |
+| **Local LLM (e.g., via LM Studio or Ollama)** | Offline work | Any local model suited for research, code, or security analysis. Good for drafting and routine tasks without burning API credits. |
+
+**Note on Cline + local models:** When using Cline with a local LLM, the
+model's system prompt works in tandem with the `.clinerules` file included in
+this repository. The system prompt provides the analytical methodology (how to
+think), while `.clinerules` provides the workflow and tool usage (what to do
+and when). Both are needed for the best results.
 
 The key principle: **use Claude.ai Projects for strategic thinking and
 analysis, use other tools for execution.** Don't waste your Opus context
@@ -713,4 +719,6 @@ knowledge but no TRR experience can produce professional-quality output.
 
 - `TRR_Research_Methodology_Guide.md` — The analytical process
 - `TRR-DDM-Research-Prompt-Long.md` — The AI system prompt
+- `TRR_DDM_Prompt_Short.md` — Condensed system prompt for local models
+- `.clinerules` — Cline workflow protocol (works in tandem with the local model prompt)
 - `TECHNIQUE-RESEARCH-REPORT-OUTLINE.md` — TRR section structure and writing guidance

@@ -299,6 +299,20 @@ def _is_noise_sigma_result(url: str) -> bool:
     return False
 
 
+
+# Microsoft legacy community forums — return outdated forum noise
+_MSFT_FORUM_NOISE_DOMAINS = [
+    'social.msdn.microsoft.com',
+    'social.technet.microsoft.com',
+]
+
+
+def _is_noise_msft_forum(url: str) -> bool:
+    """Return True if the URL is from a retired Microsoft community forum."""
+    url_lower = url.lower()
+    return any(d in url_lower for d in _MSFT_FORUM_NOISE_DOMAINS)
+
+
 def _build_queries(
     technique_id: str,
     technique_name: str,
@@ -424,6 +438,7 @@ def search_technique_sources(
     filtered_nonenglish = 0
     filtered_index = 0
     filtered_sigma = 0
+    filtered_msft_forum = 0
 
     for category_name, category_config in categories.items():
         category_results = []
@@ -515,8 +530,25 @@ def search_technique_sources(
                     print(f"  [filter] Skipped noise Sigma result: {url}")
                 filtered_sigma += 1
                 continue
+            if _is_noise_msft_forum(url):
+                if verbose:
+                    print(f"  [filter] Skipped noise MS forum: {url}")
+                filtered_msft_forum += 1
+                continue
             seen.add(url)
             unique_results.append(r)
+
+        # Enforce strict_domains: only keep results matching configured domains
+        if category_config.get('strict_domains'):
+            allowed = set(category_config.get('domains', []))
+            strict_filtered = []
+            for r in unique_results:
+                host = urllib.parse.urlparse(r['url']).netloc.lower().removeprefix('www.')
+                if any(host == d or host.endswith('.' + d) for d in allowed):
+                    strict_filtered.append(r)
+                elif verbose:
+                    print(f"  [strict] Removed non-domain result from {category_name}: {r['url']}")
+            unique_results = strict_filtered
 
         global_seen_urls.update(seen)
         results[category_name] = unique_results[:max_per_category]
@@ -531,9 +563,9 @@ def search_technique_sources(
 
     if verbose:
         print(f"  [search] Total queries: {tier1_query_count} focused + {tier2_query_count} sweep")
-        if any([filtered_mslearn, filtered_nonenglish, filtered_index, filtered_sigma]):
+        if any([filtered_mslearn, filtered_nonenglish, filtered_index, filtered_sigma, filtered_msft_forum]):
             print(f"  [filter summary] {filtered_mslearn} off-topic MS Learn, "
                   f"{filtered_nonenglish} non-English, {filtered_index} index/landing pages, "
-                  f"{filtered_sigma} Sigma noise")
+                  f"{filtered_sigma} Sigma noise, {filtered_msft_forum} MS forum noise")
 
     return results
