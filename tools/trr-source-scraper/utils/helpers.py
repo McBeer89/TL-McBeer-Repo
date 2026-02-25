@@ -78,10 +78,6 @@ class ConfigManager:
         return self.config.get("trusted_sources", {})
 
     @property
-    def trr_repository(self) -> Dict:
-        return self.config.get("trr_repository", {})
-
-    @property
     def tier1_domains(self) -> List[str]:
         return self.config.get("tier1_domains", [])
 

@@ -1,6 +1,6 @@
 # TRR Source Scraper
 
-Automated research source discovery for MITRE ATT&CK techniques. Gathers sources from MITRE ATT&CK, Atomic Red Team, the [TIRED Labs TRR library](https://github.com/tired-labs/techniques), DuckDuckGo (security blogs, Microsoft docs, Sigma rules, GitHub, academic papers, conference talks), and outputs a structured markdown research brief with optional JSON and research checklist.
+Automated research source discovery for MITRE ATT&CK techniques. Gathers sources from MITRE ATT&CK, Atomic Red Team, and DuckDuckGo (security blogs, Microsoft docs, Sigma rules, GitHub, academic papers, conference talks), and outputs a structured markdown research brief with optional JSON and source analysis.
 
 No API keys required.
 
@@ -16,14 +16,14 @@ python trr_scraper.py T1003.006 --name "DCSync"
 # Quick scan (skip metadata enrichment)
 python trr_scraper.py T1505.003 --no-enrich
 
-# Offline (MITRE + Atomic + existing TRRs only, no web search)
+# Offline (MITRE + Atomic only, no web search)
 python trr_scraper.py T1003.006 --no-ddg
 
-# Full run with JSON + research checklist
-python trr_scraper.py T1505.003 --name "Web Shell" --platform windows --json --checklist
+# Full run with JSON + source analysis
+python trr_scraper.py T1505.003 --name "Web Shell" --platform windows --json --source-analysis
 ```
 
-Output is written to `output/` as a markdown report. Add `--json` for machine-readable output and `--checklist` for a prioritized source review checklist.
+Output is written to `output/` as a markdown report. Add `--json` for machine-readable output and `--source-analysis` for a prioritized source analysis.
 
 ### Optional: Playwright for JS-Rendered Sites
 
@@ -44,7 +44,7 @@ Playwright is fully optional. The scraper works without it — JS-heavy results 
 | `--no-enrich` | Skip page metadata fetching (faster) |
 | `--no-ddg` | Skip web search entirely (offline mode) |
 | `--json` | Write structured JSON alongside markdown |
-| `--checklist` | Generate a prioritized research checklist (markdown with checkboxes) |
+| `--source-analysis` | Generate a prioritized source analysis alongside the report |
 | `--no-cache` | Force fresh queries (default: 1-day cache) |
 | `--no-playwright` | Skip Playwright rendering even if installed |
 | `--extra-terms "mimikatz"` | Append terms to every search query |
@@ -53,7 +53,6 @@ Playwright is fully optional. The scraper works without it — JS-heavy results 
 | `--max-per-category 5` | Cap results per source category |
 | `--platform windows` | Soft-filter; moves off-platform results to a separate section |
 | `--trr-id TRR0001` | Use TRR ID in output filenames instead of technique ID |
-| `--trr-repo org/repo` | Override the TRR repository (default: `tired-labs/techniques`) |
 | `--validate-links` | Check for dead links (HEAD requests only, use with `--no-enrich`) |
 | `--verbose` | Show per-category search diagnostics, cache stats, penalty details |
 | `--quiet` | Suppress all output except the final save confirmation |
@@ -67,7 +66,6 @@ The markdown brief includes:
 - **Coverage Gaps** — source categories with poor or missing results, flagging where manual research is needed
 - **MITRE ATT&CK reference** data
 - **Atomic Red Team tests** with inline commands and arguments
-- **Existing TRR/DDM matches** from the TIRED Labs library
 - **Categorized search results** sorted by relevance with source type tags (`Detection`, `Threat Intel`, `Reference`)
 
 Each result includes:
@@ -79,14 +77,14 @@ Each result includes:
 - Analysis confidence: `analyzed`, `partial`, `low`, `empty`, `failed`, or `not_fetched`
 - Noise penalties (when applied) visible in `--verbose` mode
 
-### Research Checklist (`--checklist`)
+### Source Analysis (`--source-analysis`)
 
-Generates a separate markdown file with prioritized checkboxes for source review:
+Generates a separate markdown file with prioritized sources for review:
 
 ```markdown
 ## Priority Sources (Strong Match ≥60%)
 
-- [ ] [IIS Raid – Backdooring IIS](https://example.com/...) — 82%
+- [IIS Raid – Backdooring IIS](https://example.com/...) — 82%
   > specterops.io · ~3,200 words (Long-form) · 4 code samples
   > Markers: event_ids: 4688, Sysmon 1; processes: w3wp.exe
 
@@ -94,7 +92,7 @@ Generates a separate markdown file with prioritized checkboxes for source review
 ...
 ```
 
-Sources that couldn't be content-analyzed are flagged with `⚠ empty`, `⚠ low`, or `⚠ failed` so the researcher knows which ones need manual inspection. Existing TRR matches appear as pre-checked items.
+Sources that couldn't be content-analyzed are flagged with `⚠ empty`, `⚠ low`, or `⚠ failed` so the researcher knows which ones need manual inspection.
 
 ## How Search Works
 
@@ -181,17 +179,14 @@ All settings live in `config/sources.json`. The defaults work well — only edit
 
 **`search_settings`** / **`output_settings`** — Rate limiting, timeouts, relevance thresholds, excerpt length.
 
-**`trr_repository`** — GitHub repo for existing TRR/DDM matching. Default: `tired-labs/techniques`.
-
 ## Project Structure
 
 ```
 trr-source-scraper/
-├── trr_scraper.py              # Entry point, report generation, checklist generation
+├── trr_scraper.py              # Entry point, report generation, source analysis generation
 ├── scrapers/
 │   ├── mitre_attack.py         # ATT&CK API fetch
 │   ├── duckduckgo.py           # Search with tier-1/tier-2 strategy + broad technique queries
-│   ├── existing_trr.py         # GitHub TRR/DDM scanner
 │   ├── site_fetcher.py         # Page enrichment, content analysis, Playwright integration
 │   ├── playwright_fetcher.py   # Optional headless browser for JS-rendered sites
 │   └── atomic_red_team.py      # Atomic Red Team YAML fetcher
@@ -201,22 +196,10 @@ trr-source-scraper/
 │   └── cache.py                # File-based JSON cache with TTL and stats
 ├── config/
 │   └── sources.json            # Domains, noise patterns, JS domains, settings
-├── output/                     # Reports, checklists, JSON, and search cache
+├── output/                     # Reports, source analysis, JSON, and search cache
 │   └── .cache/                 # Cached search results (auto-managed)
 ├── requirements.txt
 └── README.md
-```
-
-## Existing TRR/DDM Lookup
-
-The tool automatically checks the [tired-labs/techniques](https://github.com/tired-labs/techniques) GitHub repository for existing TRRs and DDMs that relate to the technique being researched. This uses public GitHub API endpoints — no authentication token is required.
-
-The scanner matches TRRs using technique ID (exact match), parent technique ID, and technique name keywords, and assigns a match confidence score.
-
-To use a different repository, either edit the config or pass `--trr-repo`:
-
-```bash
-python trr_scraper.py T1003.006 --trr-repo my-org/my-techniques
 ```
 
 ## Ethical Scraping
@@ -245,10 +228,10 @@ This tool follows ethical scraping practices:
 
 ## Version History
 
-**v1.6** (current) — Broad technique query intelligence, noise penalty scoring, content analysis confidence flags, coverage gap detection, research checklist export, Playwright integration for JS-rendered sites, cache diagnostics, enrichment status in JSON output.
+**v1.6** (current) — Broad technique query intelligence, noise penalty scoring, content analysis confidence flags, coverage gap detection, source analysis export, Playwright integration for JS-rendered sites, cache diagnostics, enrichment status in JSON output.
 
 **v1.5** — Content analysis (word count, depth, code blocks, technical markers, content focus tags). Relevance scoring runs after enrichment. GitHub raw file analysis.
 
 **v1.4** — Quality filters (relevance scoring, deduplication, platform filtering, trusted source tiers, dead link detection).
 
-**v1.3** — Two-tier search strategy, Atomic Red Team integration, existing TRR/DDM scanning.
+**v1.3** — Two-tier search strategy, Atomic Red Team integration.

@@ -18,4 +18,4 @@ ddgs>=9.0
 #   pip install playwright
 #   playwright install chromium
 # The scraper works without Playwright — JS-heavy sites will show ⚠ empty
-# in the checklist, prompting manual review.
+# in the source analysis, prompting manual review.

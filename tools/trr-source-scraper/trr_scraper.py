@@ -35,7 +35,6 @@ if sys.platform == 'win32':
 from scrapers import (
     fetch_mitre_technique,
     search_technique_sources,
-    scan_for_existing_trrs,
     enrich_search_results,
     validate_search_result_links,
     fetch_atomic_tests,
@@ -58,7 +57,7 @@ from utils.helpers import extract_attack_keywords, is_broad_technique
 
 # v1.6: Query intelligence (broad technique keywords, noise penalties),
 #        data quality (analysis confidence, cache stats, enrichment status),
-#        report enhancements (coverage gaps, research checklist export),
+#        report enhancements (coverage gaps, source analysis export),
 #        optional Playwright integration for JS-rendered sites.
 REPORT_VERSION = "1.6"
 
@@ -138,7 +137,6 @@ Examples:
     python trr_scraper.py T1003.006 --extra-terms mimikatz # add terms to every query
     python trr_scraper.py T1003.006 --json                # also write JSON output
     python trr_scraper.py T1003.006 --quiet               # suppress progress output
-    python trr_scraper.py T1003.006 --trr-repo tired-labs/techniques  # override TRR repo
     python trr_scraper.py T1003.006 --min-score 0.5       # only Strong Match results
     python trr_scraper.py T1003.006 --min-score 0.0       # include all results (no filter)
         """
@@ -204,13 +202,6 @@ Examples:
     )
 
     parser.add_argument(
-        "--trr-repo",
-        dest="trr_repo",
-        default="",
-        help="GitHub repo for TRR/DDM lookup (e.g., 'tired-labs/techniques'). Overrides config."
-    )
-
-    parser.add_argument(
         "--no-cache",
         action="store_true",
         help="Bypass the search result cache and force fresh DuckDuckGo queries"
@@ -250,9 +241,10 @@ Examples:
     )
 
     parser.add_argument(
-        "--checklist",
+        "--source-analysis",
+        dest="source_analysis",
         action="store_true",
-        help="Generate a markdown research checklist alongside the report",
+        help="Generate a markdown source analysis alongside the report",
     )
 
     parser.add_argument(
@@ -333,8 +325,6 @@ def _build_ddm_hints(data_sources: List[str]) -> List[Tuple[str, List[str]]]:
 def _generate_research_summary(
     technique_info: Optional[Dict],
     atomic_tests: List[Dict],
-    existing_trrs: List[Dict],
-    existing_ddms: List[Dict],
     search_results: Dict[str, List[Dict]],
     config: 'ConfigManager',
     no_ddg: bool = False,
@@ -371,18 +361,6 @@ def _generate_research_summary(
         lines.append(f"| **Atomic Tests** | {n} {word} ([see below](#atomic-red-team-emulation-tests)) |")
     else:
         lines.append("| **Atomic Tests** | None found |")
-
-    # Existing TRRs
-    if existing_trrs:
-        # Build breakdown by match_type
-        type_counts: Dict[str, int] = {}
-        for trr in existing_trrs:
-            mt = trr.get('match_type', 'unknown')
-            type_counts[mt] = type_counts.get(mt, 0) + 1
-        breakdown = ', '.join(f"{count} {mtype}" for mtype, count in type_counts.items())
-        lines.append(f"| **Existing TRRs** | {len(existing_trrs)} matches ({breakdown}) |")
-    else:
-        lines.append("| **Existing TRRs** | 0 matches |")
 
     # Sources found (only when DDG search was run)
     if not no_ddg:
@@ -671,30 +649,6 @@ def _normalize_atomic_test(test: Dict) -> Dict:
     }
 
 
-def _normalize_existing_trr(trr: Dict) -> Dict:
-    """Ensure every existing TRR entry has a consistent set of fields."""
-    return {
-        "file_name": trr.get("file_name", ""),
-        "file_path": trr.get("file_path", ""),
-        "trr_id": trr.get("trr_id", ""),
-        "title": trr.get("title", ""),
-        "techniques": trr.get("techniques", []),
-        "match_type": trr.get("match_type", ""),
-        "match_score": trr.get("match_score", 0),
-        "github_url": trr.get("github_url", ""),
-        "references": trr.get("references", []),
-    }
-
-
-def _normalize_existing_ddm(ddm: Dict) -> Dict:
-    """Ensure every existing DDM entry has a consistent set of fields."""
-    return {
-        "file_name": ddm.get("file_name", ""),
-        "file_path": ddm.get("file_path", ""),
-        "technique_id": ddm.get("technique_id", ""),
-        "github_url": ddm.get("github_url", ""),
-    }
-
 
 def _render_search_result(
     lines: List[str],
@@ -846,26 +800,25 @@ def _compute_coverage_gaps(
     return gaps
 
 
-def generate_research_checklist(
+def generate_source_analysis(
     technique_id: str,
     technique_name: str,
     search_results: Dict[str, List[Dict]],
     atomic_tests: List[Dict],
-    existing_trrs: List[Dict],
     min_score: float = 0.25,
     top_n: int = 20,
     platform: str = "",
     trr_id: str = "",
 ) -> str:
     """
-    Generate a markdown research checklist — a prioritized action-items view
+    Generate a markdown source analysis — a prioritized view
     of the top sources for the researcher to review.
     """
     lines = []
     timestamp = datetime.now().strftime("%Y-%m-%d")
 
     # Header
-    title_parts = [f"# Research Checklist — {technique_id} {technique_name}"]
+    title_parts = [f"# Source Analysis — {technique_id} {technique_name}"]
     if trr_id:
         title_parts[0] += f" ({trr_id})"
     lines.append(title_parts[0])
@@ -892,8 +845,8 @@ def generate_research_checklist(
     review = [r for r in top_results if 0.40 <= r.get('relevance_score', 0) < 0.60]
     check = [r for r in top_results if r.get('relevance_score', 0) < 0.40]
 
-    def _render_checklist_item(r: Dict) -> List[str]:
-        """Render a single checklist item."""
+    def _render_source_item(r: Dict) -> List[str]:
+        """Render a single source item."""
         item_lines = []
         title = r.get('title', 'Untitled')
         url = r.get('url', '')
@@ -901,7 +854,7 @@ def generate_research_checklist(
         domain = r.get('domain', '')
         date = r.get('date', '')
 
-        item_lines.append(f"- [ ] [{title}]({url}) — {score:.0%}")
+        item_lines.append(f"- [{title}]({url}) — {score:.0%}")
 
         # Metadata sub-line
         meta_parts = []
@@ -943,55 +896,29 @@ def generate_research_checklist(
         lines.append(f"## Priority Sources (Strong Match \u226560%)")
         lines.append("")
         for r in strong:
-            lines.extend(_render_checklist_item(r))
+            lines.extend(_render_source_item(r))
             lines.append("")
 
     if review:
         lines.append(f"## Review Sources (Likely Relevant 40-59%)")
         lines.append("")
         for r in review:
-            lines.extend(_render_checklist_item(r))
+            lines.extend(_render_source_item(r))
             lines.append("")
 
     if check:
         lines.append(f"## Check Sources (Possible Match 25-39%)")
         lines.append("")
         for r in check:
-            lines.extend(_render_checklist_item(r))
+            lines.extend(_render_source_item(r))
             lines.append("")
 
     if not top_results:
         lines.append("*No sources passed the relevance threshold.*")
         lines.append("")
 
-    # Existing Coverage
-    lines.append("## Existing Coverage")
-    lines.append("")
-    if existing_trrs:
-        for trr in existing_trrs:
-            trr_label = trr.get('trr_id', '') or trr.get('file_name', 'Unknown')
-            title = trr.get('title', '')
-            detail = f" — {title}" if title else " (existing TRR found)"
-            lines.append(f"- [x] {trr_label}{detail}")
-    else:
-        lines.append("- [ ] No existing TRRs found for this technique")
-
-    if atomic_tests:
-        n = len(atomic_tests)
-        word = "test" if n == 1 else "tests"
-        lines.append(f"- [ ] {n} Atomic Red Team {word} available ({technique_id})")
-    else:
-        lines.append("- [ ] No Atomic Red Team tests available")
-
-    lines.append("")
-
-    # Notes section
-    lines.append("## Notes")
-    lines.append("")
-    lines.append("_Use this space for research notes as you review sources._")
-    lines.append("")
     lines.append("---")
-    lines.append(f"*Generated by TRR Source Scraper v{REPORT_VERSION}*")
+    lines.append(f"*Generated by TRR Source Scraper v{REPORT_VERSION} · {timestamp}*")
 
     return '\n'.join(lines)
 
@@ -999,8 +926,6 @@ def generate_research_checklist(
 def generate_markdown_report(
     technique_id: str,
     technique_info: Optional[Dict],
-    existing_trrs: List[Dict],
-    existing_ddms: List[Dict],
     atomic_tests: List[Dict],
     search_results: Dict[str, List[Dict]],
     config: ConfigManager,
@@ -1018,8 +943,6 @@ def generate_markdown_report(
     Args:
         technique_id: MITRE ATT&CK technique ID
         technique_info: Information from MITRE ATT&CK
-        existing_trrs: List of existing TRRs found
-        existing_ddms: List of existing DDMs found
         atomic_tests: Emulation tests from Atomic Red Team
         search_results: Search results organized by category
         config: Configuration manager
@@ -1066,8 +989,6 @@ def generate_markdown_report(
     lines.extend(_generate_research_summary(
         technique_info=technique_info,
         atomic_tests=atomic_tests,
-        existing_trrs=existing_trrs,
-        existing_ddms=existing_ddms,
         search_results=search_results,
         config=config,
         no_ddg=no_ddg,
@@ -1138,69 +1059,6 @@ def generate_markdown_report(
 
     # Atomic Red Team section
     lines.extend(_generate_atomic_section(atomic_tests, technique_id, platform=platform))
-
-    # Existing TRRs
-    if existing_trrs:
-        lines.append("## Existing TRRs in Repository")
-        lines.append("")
-        lines.append("The following existing TRRs may contain relevant information:")
-        lines.append("")
-
-        for trr in sorted(existing_trrs, key=lambda x: x.get('match_score', 0), reverse=True):
-            match_label = {
-                'exact': 'Exact Match',
-                'parent': 'Parent Technique',
-                'name': 'Name Match'
-            }.get(trr.get('match_type', ''), 'Related')
-
-            lines.append(f"### {trr.get('file_name', 'Unknown')}")
-            lines.append("")
-            if trr.get('trr_id'):
-                lines.append(f"**TRR ID:** {trr['trr_id']}")
-            lines.append(f"**Match Type:** {match_label}")
-            if trr.get('title'):
-                lines.append(f"**Title:** {trr['title']}")
-            if trr.get('techniques'):
-                lines.append(f"**Techniques:** {', '.join(trr['techniques'])}")
-            lines.append("")
-
-            if trr.get('references'):
-                lines.append("**References from TRR:**")
-                for ref in trr['references'][:5]:
-                    lines.append(f"- [{ref.get('name', 'Reference')}]({ref.get('url', '')})")
-                lines.append("")
-
-            lines.append(f"**File:** `{trr.get('file_path', '')}`")
-            lines.append("")
-
-        lines.append("---")
-        lines.append("")
-
-    # Existing DDMs (cross-reference with TRR titles when available)
-    if existing_ddms:
-        lines.append("## Existing DDMs in Repository")
-        lines.append("")
-        # Build TRR-ID -> title lookup from existing TRRs
-        trr_title_map: Dict[str, str] = {}
-        for trr in existing_trrs:
-            tid = trr.get('trr_id', '')
-            ttitle = trr.get('title', '')
-            if tid and ttitle:
-                trr_title_map[tid.lower()] = ttitle
-        for ddm in existing_ddms:
-            fname = ddm.get('file_name', '')
-            # Extract TRR ID from filename: ddm_trr0011_ad_a.json -> trr0011
-            trr_match = _re.search(r'(trr\d+)', fname, _re.IGNORECASE)
-            parent_title = ""
-            if trr_match:
-                parent_title = trr_title_map.get(trr_match.group(1).lower(), "")
-            if parent_title:
-                lines.append(f"- `{fname}` — {parent_title}")
-            else:
-                lines.append(f"- `{fname}`")
-        lines.append("")
-        lines.append("---")
-        lines.append("")
 
     # Search Results by Category
     category_labels = {
@@ -1346,7 +1204,7 @@ def main():
     user_agent = config.search_settings.get('user_agent', 'TRR-Source-Scraper/1.0')
 
     # Step 1: Fetch MITRE ATT&CK information
-    print_progress("Step 1/6 — Fetching MITRE ATT&CK data...", always=True, quiet=quiet)
+    print_progress("Step 1/5 — Fetching MITRE ATT&CK data...", always=True, quiet=quiet)
     technique_info = fetch_mitre_technique(technique_id, user_agent)
 
     if technique_info:
@@ -1365,35 +1223,8 @@ def main():
     if not technique_name:
         technique_name = technique_id
 
-    # Step 2: Check for existing TRRs
-    trr_cfg = config.trr_repository
-    github_repo = args.trr_repo or trr_cfg.get("github_repo", "")
-    branch = trr_cfg.get("branch", "main")
-    reports_path = trr_cfg.get("reports_path", "reports")
-
-    if github_repo:
-        print_progress(f"Step 2/6 — Checking {github_repo} for existing TRRs and DDMs...", always=True, quiet=quiet)
-    else:
-        print_progress("Step 2/6 — No TRR repository configured — skipping", always=True, quiet=quiet)
-
-    existing_trrs, existing_ddms = scan_for_existing_trrs(
-        technique_id,
-        technique_name,
-        github_repo=github_repo,
-        branch=branch,
-        reports_path=reports_path,
-        user_agent=user_agent,
-    )
-
-    if existing_trrs:
-        print_progress(f"         Found {len(existing_trrs)} existing TRR(s)", always=True, quiet=quiet)
-    if existing_ddms:
-        print_progress(f"         Found {len(existing_ddms)} existing DDM(s)", always=True, quiet=quiet)
-    if github_repo and not existing_trrs and not existing_ddms:
-        print_progress("         No existing TRRs or DDMs found — this is a new technique to research", always=True, quiet=quiet)
-
-    # Step 3: Fetch Atomic Red Team tests
-    print_progress("Step 3/6 — Fetching Atomic Red Team emulation tests...", always=True, quiet=quiet)
+    # Step 2: Fetch Atomic Red Team tests
+    print_progress("Step 2/5 — Fetching Atomic Red Team emulation tests...", always=True, quiet=quiet)
     atomic_tests = fetch_atomic_tests(technique_id, user_agent)
 
     if atomic_tests:
@@ -1404,12 +1235,12 @@ def main():
     else:
         print_progress("         No Atomic Red Team tests found for this technique", always=True, quiet=quiet)
 
-    # Step 4: Search for sources (skippable with --no-ddg)
+    # Step 3: Search for sources (skippable with --no-ddg)
     if args.no_ddg:
-        print_progress("Step 4/6 — Skipping DuckDuckGo search (--no-ddg)", always=True, quiet=quiet)
+        print_progress("Step 3/5 — Skipping DuckDuckGo search (--no-ddg)", always=True, quiet=quiet)
         search_results: Dict[str, List[Dict]] = {}
     else:
-        print_progress("Step 4/6 — Searching for research sources...", always=True, quiet=quiet)
+        print_progress("Step 3/5 — Searching for research sources...", always=True, quiet=quiet)
         t1_count = len(config.tier1_domains)
         print_progress(f"         Running {t1_count} focused queries for high-value sources...", always=True, quiet=quiet)
         print_progress(f"         Plus sweep queries across {len(config.trusted_sources)} categories...", always=True, quiet=quiet)
@@ -1442,10 +1273,10 @@ def main():
                 always=True, quiet=quiet,
             )
 
-    # Step 5: Enrich results with metadata (optional)
+    # Step 4: Enrich results with metadata (optional)
     total_results = sum(len(r) for r in search_results.values())
     if not args.no_enrich and not args.no_ddg and total_results > 0:
-        print_progress("Step 5/6 — Enriching results with page metadata...", always=True, quiet=quiet)
+        print_progress("Step 4/5 — Enriching results with page metadata...", always=True, quiet=quiet)
         js_domains = [] if args.no_playwright else config.js_rendered_domains
 
         # Create a shared Playwright fetcher (if available) to reuse one
@@ -1497,15 +1328,15 @@ def main():
                 always=True, quiet=quiet,
             )
     elif args.validate_links and not args.no_ddg and total_results > 0:
-        print_progress("Step 5/6 — Validating links (HEAD requests only)...", always=True, quiet=quiet)
+        print_progress("Step 4/5 — Validating links (HEAD requests only)...", always=True, quiet=quiet)
         for category, results in search_results.items():
             if results:
                 search_results[category] = validate_search_result_links(results, user_agent)
     else:
         reason = "--no-ddg" if args.no_ddg else "--no-enrich" if args.no_enrich else "no results"
-        print_progress(f"Step 5/6 — Skipping metadata enrichment ({reason})", always=True, quiet=quiet)
+        print_progress(f"Step 4/5 — Skipping metadata enrichment ({reason})", always=True, quiet=quiet)
 
-    # Step 6: Score, sort, and filter results by relevance
+    # Step 5: Score, sort, and filter results by relevance
     # (Runs AFTER enrichment so body-content signals are available)
     filtered_count = 0
     min_score = (
@@ -1514,7 +1345,7 @@ def main():
         else config.search_settings.get('min_relevance_score', 0.25)
     )
     if search_results:
-        print_progress("Step 6/6 — Scoring and filtering results by relevance...", always=True, quiet=quiet)
+        print_progress("Step 5/5 — Scoring and filtering results by relevance...", always=True, quiet=quiet)
         mitre_ref_domains = set()
         if technique_info:
             for ref in technique_info.get('references', []):
@@ -1576,8 +1407,6 @@ def main():
     report = generate_markdown_report(
         technique_id=technique_id,
         technique_info=technique_info,
-        existing_trrs=existing_trrs,
-        existing_ddms=existing_ddms,
         atomic_tests=atomic_tests,
         search_results=search_results,
         config=config,
@@ -1625,8 +1454,6 @@ def main():
             for category, results in search_results.items()
         }
         normalized_tests = [_normalize_atomic_test(t) for t in atomic_tests]
-        normalized_trrs = [_normalize_existing_trr(t) for t in existing_trrs]
-        normalized_ddms = [_normalize_existing_ddm(d) for d in existing_ddms]
 
         raw_data = {
             "technique_id": technique_id,
@@ -1636,8 +1463,6 @@ def main():
             "report_version": REPORT_VERSION,
             "scan_mode": filename_suffix,
             "technique_info": safe_technique_info,
-            "existing_trrs": normalized_trrs,
-            "existing_ddms": normalized_ddms,
             "atomic_tests": normalized_tests,
             "search_results": normalized_results,
         }
@@ -1645,26 +1470,25 @@ def main():
             json.dump(raw_data, f, indent=2, ensure_ascii=False)
         print(f"JSON saved to:  {json_file}")
 
-    # Optionally generate research checklist
-    if args.checklist and not search_results:
-        print("Checklist skipped: no search results (use without --no-ddg)")
-    elif args.checklist and search_results:
-        checklist = generate_research_checklist(
+    # Optionally generate source analysis
+    if args.source_analysis and not search_results:
+        print("Source analysis skipped: no search results (use without --no-ddg)")
+    elif args.source_analysis and search_results:
+        source_analysis = generate_source_analysis(
             technique_id=technique_id,
             technique_name=technique_name,
             search_results=search_results,
             atomic_tests=atomic_tests,
-            existing_trrs=existing_trrs,
             min_score=min_score,
             top_n=20,
             platform=args.platform or "",
             trr_id=args.trr_id,
         )
         json_base = args.trr_id if args.trr_id else technique_id
-        checklist_file = output_dir / f"{json_base}_research_checklist.md"
-        with open(checklist_file, 'w', encoding='utf-8') as f:
-            f.write(checklist)
-        print(f"Checklist saved: {checklist_file}")
+        source_analysis_file = output_dir / f"{json_base}_source_analysis.md"
+        with open(source_analysis_file, 'w', encoding='utf-8') as f:
+            f.write(source_analysis)
+        print(f"Source analysis saved: {source_analysis_file}")
 
     print("")
     print("=" * 55)
