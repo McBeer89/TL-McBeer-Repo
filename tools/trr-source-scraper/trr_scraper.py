@@ -1233,7 +1233,11 @@ def main():
     # Deduplicate across categories (GitHub forks, academic paper formats, etc.)
     if search_results:
         pre_dedup_total = sum(len(r) for r in search_results.values())
-        search_results = deduplicate_results(search_results, verbose=verbose)
+        search_results = deduplicate_results(
+            search_results,
+            verbose=verbose,
+            known_fork_repos=config.known_fork_repos,
+        )
         post_dedup_total = sum(len(r) for r in search_results.values())
         dedup_removed = pre_dedup_total - post_dedup_total
         if dedup_removed > 0:

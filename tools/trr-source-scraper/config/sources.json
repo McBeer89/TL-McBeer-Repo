@@ -7,7 +7,14 @@
     "crowdstrike.com",
     "learn.microsoft.com",
     "techcommunity.microsoft.com",
-    "mandiant.com"
+    "mandiant.com",
+    "blacklanternsecurity.com",
+    "ired.team"
+  ],
+
+  "known_fork_repos": [
+    "as22323/art",
+    "hxoe3i/art"
   ],
 
   "trusted_sources": {
@@ -38,7 +45,7 @@
         "sentinelone.com",
         "blog.talosintelligence.com",
         "research.nccgroup.com",
-        "blog.blacklanternsecurity.com",
+        "blacklanternsecurity.com",
         "ired.team"
       ],
       "search_prefix": "",

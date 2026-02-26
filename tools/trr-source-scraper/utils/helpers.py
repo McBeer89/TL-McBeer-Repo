@@ -89,6 +89,10 @@ class ConfigManager:
     def js_rendered_domains(self) -> List[str]:
         return self.config.get("js_rendered_domains", [])
 
+    @property
+    def known_fork_repos(self) -> List[str]:
+        return self.config.get("known_fork_repos", [])
+
 
 def extract_attack_keywords(description: str, max_keywords: int = 5) -> list:
     """
@@ -575,29 +579,10 @@ _PREFERRED_GITHUB_ORGS = [
     'elastic', 'splunk', 'microsoft', 'neo23x0',
 ]
 
-# Known GitHub forks — map fork org/repo to canonical org/repo.
-# When both appear in results, keep only the canonical version.
-_KNOWN_FORKS = {
-    'as22323/art': 'redcanaryco/atomic-red-team',
-    'hxoe3i/art': 'redcanaryco/atomic-red-team',
-    '0x00-0x00/atomic-red-team': 'redcanaryco/atomic-red-team',
-}
-
-
-def _get_github_org_repo(url: str) -> Optional[str]:
-    """Extract 'org/repo' from a GitHub URL, lowercased."""
-    m = re.search(r'(?:^|[./])github\.com/([^/]+/[^/]+)', url)
-    if m:
-        return m.group(1).lower()
-    m = re.search(r'(?:^|[./])raw\.githubusercontent\.com/([^/]+/[^/]+)', url)
-    if m:
-        return m.group(1).lower()
-    return None
-
-
 def deduplicate_results(
     results: Dict[str, List[Dict]],
     verbose: bool = False,
+    known_fork_repos: Optional[List[str]] = None,
 ) -> Dict[str, List[Dict]]:
     """
     Remove duplicate search results across all categories.
@@ -664,57 +649,19 @@ def deduplicate_results(
         for r in cat_results:
             all_items.append((category, r))
 
-    # -- Pass 0: Known fork suppression ------------------------------------
-    # If a result's org/repo is in _KNOWN_FORKS and a result from the
-    # canonical repo exists anywhere, suppress the fork.  If only the
-    # fork is present, rewrite the URL to the canonical repo.
-
-    canonical_present = set()  # canonical org/repo values seen in results
-    fork_items = []  # (category, result, fork_org_repo, canonical_org_repo)
-
-    for category, r in all_items:
-        org_repo = _get_github_org_repo(r.get('url', ''))
-        if not org_repo:
-            continue
-        canonical = _KNOWN_FORKS.get(org_repo)
-        if canonical:
-            fork_items.append((category, r, org_repo, canonical))
-        elif org_repo in _KNOWN_FORKS.values():
-            canonical_present.add(org_repo)
-
-    rewritten_canonicals = set()  # track canonicals we've already rewritten to
-    for category, r, fork_org_repo, canonical_org_repo in fork_items:
-        if canonical_org_repo in canonical_present:
-            # Canonical exists — suppress the fork
-            removed_urls.add(r['url'])
-            if verbose:
-                print(f"  [dedup] Removed known fork: {r['url']}")
-        elif canonical_org_repo in rewritten_canonicals:
-            # Another fork was already rewritten to this canonical — suppress
-            removed_urls.add(r['url'])
-            if verbose:
-                print(f"  [dedup] Removed duplicate fork: {r['url']}")
-        else:
-            # Only fork exists — rewrite URL to canonical (first one wins)
-            rewritten_canonicals.add(canonical_org_repo)
-            old_url = r['url']
-            fork_org, fork_repo = fork_org_repo.split('/')
-            canon_org, canon_repo = canonical_org_repo.split('/')
-            new_url = re.sub(
-                r'(github\.com|raw\.githubusercontent\.com)/' + re.escape(fork_org) + '/' + re.escape(fork_repo),
-                r'\1/' + canon_org + '/' + canon_repo,
-                old_url,
-                count=1,
-            )
-            r['url'] = new_url
-            # Also scrub fork references from title and description
-            fork_label = f'{fork_org}/{fork_repo}'
-            canon_label = f'{canon_org}/{canon_repo}'
-            for field in ('title', 'description'):
-                if fork_label in r.get(field, ''):
-                    r[field] = r[field].replace(fork_label, canon_label)
-            if verbose:
-                print(f"  [dedup] Rewrote fork URL: {old_url} -> {new_url}")
+    # -- Pass 0: Known fork blocklist ------------------------------------
+    # These repos are personal forks of canonical repos (e.g. forks of
+    # redcanaryco/atomic-red-team) whose content is fetched directly in
+    # Step 3. They add no unique value via search results.
+    if known_fork_repos:
+        _fork_set = {r.lower() for r in known_fork_repos}
+        for _category, r in all_items:
+            url = r.get('url', '')
+            m = re.search(r'github\.com/([^/]+/[^/]+)', url)
+            if m and m.group(1).lower() in _fork_set:
+                removed_urls.add(url)
+                if verbose:
+                    print(f"  [dedup] Removed known fork: {url}")
 
     # -- Pass 1: GitHub fork dedup ----------------------------------------
 
