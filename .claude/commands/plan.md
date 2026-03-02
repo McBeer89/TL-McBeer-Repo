@@ -22,9 +22,9 @@ Break the goal into 3-6 concrete subtasks. For each subtask, identify:
 
 ### Step 2: Parallel Research
 
-Spawn **multiple researcher subagents in parallel** to investigate the unknowns. Each researcher should focus on a different aspect of the goal. For example:
-- One researches the existing codebase for relevant patterns
-- One researches external best practices or libraries
+Spawn **multiple trr-researcher subagents in parallel** to investigate the unknowns. Each researcher should focus on a different aspect of the goal. For example:
+- One researches the existing repo for relevant context
+- One researches external sources, documentation, or best practices
 - One identifies potential risks or blockers
 
 Wait for all researchers to return before proceeding.
@@ -37,17 +37,14 @@ Based on the research, create a concrete plan:
 ## Plan: [Goal Title]
 
 ### Phase 1: [Name]
-- [ ] Task 1 (agent: coder/researcher) — description
-- [ ] Task 2 (agent: coder) — description
+- [ ] Task 1 (agent: trr-researcher / ddm-builder / trr-writer / coder) — description
+- [ ] Task 2 (agent: ...) — description
 
 ### Phase 2: [Name] (depends on Phase 1)
-- [ ] Task 3 (agent: coder) — description
+- [ ] Task 3 (agent: ...) — description
 - [ ] Task 4 (agent: reviewer) — review Phase 1+2
-
-### Cline-suitable tasks (can be handed to local model):
-- [ ] Boilerplate/grunt work items
 ```
 
 ### Step 4: Save the Plan
 
-Save the plan to `outputs/plans/` with a descriptive filename. Then present it to the user for approval before execution.
+Save the plan to `WIP TRRs\TRR####\win\Supporting Docs\plan.md` if TRR-related, or to `tools\` if tooling-related. Then present it to the user for approval before execution.

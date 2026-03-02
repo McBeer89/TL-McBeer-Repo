@@ -1,37 +1,49 @@
 ---
-description: Show current project status including recent work, git state, and outputs
+description: Show current TRR work state — what's in progress, what's complete, git status, and any open questions.
 ---
 
 # Status
 
-## Instructions
+Show the current state of all TRR research work.
 
-Give a quick overview of the current project state. Check these things:
+### Step 1: Repository Scan
 
-### Git Status
+Read the repository structure:
+- List all folders in `WIP TRRs\` (in-progress TRRs)
+- List all folders in `Completed TRR Reports\` (finished TRRs)
+- For each WIP TRR, check what files exist in `ddms\` and `Supporting Docs\`
+
+### Step 2: Git Status
+
+Run:
 ```bash
-git status --short
+git status
 git log --oneline -10
 ```
 
-### Recent Outputs
-```bash
-find outputs/ -type f -name "*.md" -mtime -7 2>/dev/null | head -20
+### Step 3: Open Questions
+
+Scan all files in `WIP TRRs\` for any `[?]` markers indicating unresolved questions.
+
+### Step 4: Present Summary
+
+```markdown
+## TIRED Labs Repository Status
+
+### In-Progress TRRs (WIP TRRs\)
+| TRR ID | Technique | Platform | Phase | DDMs Present | Open [?] |
+|--------|-----------|----------|-------|--------------|----------|
+| TRR#### | [name] | win | [phase] | [files] | [count] |
+
+### Completed TRRs (Completed TRR Reports\)
+[List with TRR ID and technique name]
+
+### Uncommitted Changes
+[From git status]
+
+### Recent Commits
+[Last 10 commits]
+
+### Open Questions [?]
+[Unresolved markers found, with file location]
 ```
-
-### Project Structure
-```bash
-ls -la
-```
-
-### Present
-
-Summarize in a clean format:
-
-**Recent Activity**: What's been done in the last few commits.
-
-**Current State**: Any uncommitted changes, what branch we're on.
-
-**Outputs**: List of recent deliverables in `outputs/`.
-
-**Pending**: Anything that looks unfinished or needs attention.
