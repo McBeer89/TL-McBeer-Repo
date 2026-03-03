@@ -8,7 +8,7 @@
 | External IDs | [T1505.004]                                |
 | Tactics      | Persistence                                |
 | Platforms    | Windows                                    |
-| Contributors | Andrew VanVleet                            |
+| Contributors | John                                       |
 
 ## Scope Statement
 
