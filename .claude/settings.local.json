@@ -102,7 +102,14 @@
       "WebFetch(domain:www.pcrisk.com)",
       "WebFetch(domain:www.securityweek.com)",
       "WebFetch(domain:www.meritalk.com)",
-      "WebFetch(domain:polygonben.github.io)"
+      "WebFetch(domain:polygonben.github.io)",
+      "WebFetch(domain:i.blackhat.com)",
+      "WebFetch(domain:blog.davidebbo.com)",
+      "Read(//c/Users/JohnM/Downloads/**)",
+      "Read(//c/Users/JohnM/.claude/**)"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\JohnM\\.claude"
     ]
   }
 }

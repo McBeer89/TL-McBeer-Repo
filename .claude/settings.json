@@ -1,0 +1,30 @@
+{
+  "$schema": "https://cdn.jsdelivr.net/npm/@anthropic-ai/claude-code@latest/config-schema.json",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/trr-prose-guard.sh\""
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "Review the assistant's final response for TRR research quality. Reject it if ANY of the following are true:\n\n1. RATIONALIZATION: The assistant claims work is done while leaving [?] markers unresolved, skipping a validation checklist, deferring work to 'follow-up' or 'next session' that wasn't requested, saying something is 'likely' or 'probably' instead of verifying, or claiming issues are 'pre-existing' or 'out of scope' to avoid fixing them.\n\n2. SKIPPED PHASE GATE: A /trr, /scope, or /ddm command includes a STOP checkpoint, and the assistant blew past it without presenting findings and waiting for user confirmation.\n\n3. INCOMPLETE INCLUSION TEST: The assistant added or discussed a DDM operation without explicitly confirming all three criteria (essential AND immutable AND observable). Hedging language like 'this appears to be essential' or 'this is likely observable' counts as incomplete.\n\n4. DETECTION CREEP: The assistant used detection-oriented language in TRR prose - phrases like 'primary detection opportunity,' 'high-fidelity signal,' 'defenders should,' 'this is the best place to detect,' or 'this operation provides visibility.' Telemetry sources stated as facts are fine; prescriptive detection guidance is not.\n\n5. TOOL-FOCUSED ANALYSIS: The assistant named a specific tool (Mimikatz, CobaltStrike, China Chopper, PowerSploit, etc.) as if the tool defines the operation, rather than describing the essential operation the tool performs.\n\nIf ANY of these are true, respond: {\"ok\": false, \"reason\": \"[specific issue and what to fix]\"}\nIf the work is genuinely complete and clean, respond: {\"ok\": true}"
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/notify-stop.sh\""
+          }
+        ]
+      }
+    ]
+  }
+}

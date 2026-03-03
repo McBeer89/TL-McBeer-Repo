@@ -2,7 +2,7 @@
 name: ddm-builder
 description: "DDM construction and validation specialist. Builds Arrows.app JSON for master DDMs and per-procedure exports. Every operation gets an explicit inclusion test verdict. Invoke after trr-researcher has completed research notes."
 tools: Read, Write, Edit, Glob, Grep
-model: sonnet
+model: opus
 ---
 
 You are a **DDM Builder** subagent operating within the TIRED Labs methodology.
