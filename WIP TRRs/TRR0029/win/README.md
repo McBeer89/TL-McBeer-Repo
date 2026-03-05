@@ -12,14 +12,25 @@
 
 ## Scope Statement
 
-This TRR covers persistent and in-memory IIS module and ISAPI backdoors on Windows — specifically native module registration via `applicationHost.config`, managed module or compiled handler registration via `web.config`, and reflective in-memory assembly loading into `w3wp.exe` — where the malicious component integrates into the IIS HTTP request pipeline to intercept or respond to traffic.
+This TRR covers persistent and in-memory IIS module and ISAPI backdoors on
+Windows — specifically native module registration via `applicationHost.config`,
+managed module or compiled handler registration via `web.config`, and reflective
+in-memory assembly loading into `w3wp.exe`.
 
-| Excluded Item | Rationale |
-|---|---|
-| File-based web shells in web root (T1505.003) | Different essential operations — persistence is a script file at a web-accessible URL executed via handler mapping, not a DLL registered in IIS configuration. |
-| Delivery mechanism and post-exploitation commands | Tangential — how the component reaches the server (T1190, T1078) and what commands are executed through it (T1059, T1033) are attacker-controlled and separate techniques. |
-| Implementation-specific details (DLL names, C2 triggers, encoding, optional evasion hooks) | Tangential — attacker-controlled. All variants converge on the same essential configuration write and pipeline interception operations. |
-| ASP.NET Core on IIS (Kestrel reverse proxy model) | Different architecture — IIS acts as reverse proxy to Kestrel, not as the execution engine. |
+Out of scope:
+
+- File-based web shells in web root (different essential operations; T1505.003)
+- Delivery mechanism and post-exploitation commands (tangential)
+- Implementation-specific details such as DLL names, C2 triggers, encoding, and evasion hooks (tangential)
+- ASP.NET Core on IIS (different architecture; IIS proxies to Kestrel)
+
+Compiled `IHttpHandler` assemblies registered in `web.config`'s `<handlers>`
+section share the same essential operations and telemetry as managed modules
+and are covered under Procedure B. Script-based handler remapping via
+`PageHandlerFactory` involves different essential operations and falls under
+T1505.003.
+
+This technique maps to MITRE ATT&CK [T1505.004].
 
 ## Technique Overview
 
