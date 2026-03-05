@@ -25,8 +25,8 @@ Out of scope:
 - Non-Windows platforms (Apache, Nginx, Tomcat, etc.)
 
 Server-Side Includes (SSI) via `ssinc.dll` are discussed in Technical
-Background but not treated as a separate procedure — SSI-based shells follow
-the same essential operations as Procedures A and B.
+Background but not treated as a separate procedure — the primary SSI web shell
+use case (`#exec cmd=`) follows the same essential operations as Procedure A.
 
 This technique maps to MITRE ATT&CK [T1505.003].
 
@@ -103,7 +103,11 @@ are mapped to executable handlers:
 
 IIS also supports Server-Side Includes (SSI) via `ssinc.dll`. If enabled,
 files with extensions `.shtml`, `.stm`, and `.shtm` can execute directives
-such as `<!--#exec cmd="command">`.
+such as `<!--#exec cmd="command">`. The `#exec cmd=` directive spawns a child
+process and follows the same essential operations as Procedure A. Other SSI
+directives (`#include`, `#echo`) are handled internally by `ssinc.dll` without
+passing through a scripting engine; while these are in-process operations, they
+do not map to Procedure B.
 
 For a web shell to function under default handler mappings, it must use a file
 extension already mapped to an executable handler. This is an essential and
@@ -213,6 +217,12 @@ within `w3wp.exe` (e.g., `System.IO.File.ReadAllText()`,
 
 The specific API calls are attacker-controlled and tangential. The side effects
 of those calls may produce telemetry depending on the action taken.
+
+SSI directives such as `#include` and `#echo` also operate without spawning a
+child process, but they do not map to this procedure. These directives are
+processed by `ssinc.dll`'s built-in logic rather than through a scripting
+engine executing attacker-authored code; they never pass through the Execute
+Code operation in the pipeline.
 
 #### Detection Data Model
 

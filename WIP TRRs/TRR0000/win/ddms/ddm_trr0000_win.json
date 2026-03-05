@@ -86,7 +86,7 @@
       "labels": ["Sysmon 11 (FileCreate)", "FIM"],
       "properties": {
         "Target": "web.config",
-        "Content": "Handler mapping + build provider"
+        "Content": "Varies by variant"
       },
       "style": {
         "border-color": "#000000",
